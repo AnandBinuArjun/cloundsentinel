@@ -68,8 +68,7 @@ jobs:
         run: bandit -r apps packages cloud_connectors detections compliance -ll
 
       - name: Python dependency vulnerability audit (pip-audit)
-        run: pip-audit --strict --progress-spinner off
-        continue-on-error: true
+        run: pip-audit --skip-editable --progress-spinner off
 
       - name: Apply Alembic migrations against PostgreSQL 16 (including RLS)
         env:

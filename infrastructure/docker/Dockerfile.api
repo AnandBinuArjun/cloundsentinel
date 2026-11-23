@@ -16,7 +16,7 @@ COPY detections ./detections
 COPY compliance ./compliance
 
 RUN python -m venv /opt/venv \
-    && /opt/venv/bin/pip install --upgrade pip \
+    && /opt/venv/bin/pip install --upgrade pip "setuptools>=78.1.1" wheel \
     && /opt/venv/bin/pip install .
 
 FROM python:3.12.10-slim AS runtime
@@ -25,11 +25,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH"
 
-# Apply available Debian security updates to the pinned base image (keeps Trivy clean).
+# Apply available Debian security updates and upgrade base-image pip/setuptools so Trivy sees zero vulnerable packages.
 RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && /usr/local/bin/pip install --no-cache-dir --upgrade pip "setuptools>=78.1.1" wheel
 
 RUN groupadd --system --gid 10001 cloudsentinel \
     && useradd --system --uid 10001 --gid cloudsentinel --home-dir /app --shell /sbin/nologin cloudsentinel

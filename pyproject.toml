@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools==75.8.0", "wheel==0.45.1"]
+requires = ["setuptools==84.2.1", "wheel==0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,10 +7,10 @@ name = "cloudsentinel"
 version = "1.0.0"
 description = "CloudSentinel — Multi-Cloud Security Posture Management & Threat Detection Platform"
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi==0.115.12",
+    "fastapi==0.165.0",
     "uvicorn[standard]==0.34.0",
     "pydantic==2.10.6",
     "pydantic-settings==2.8.1",
@@ -21,16 +21,16 @@ dependencies = [
     "redis==5.2.1",
     "celery==5.4.0",
     "httpx==0.28.1",
-    "PyJWT[crypto]==2.10.1",
+    "PyJWT[crypto]==2.15.1",
     "boto3==1.36.26",
     "azure-identity==1.20.0",
-    "fpdf2==2.8.2",
+    "fpdf2==2.9.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest==8.3.5",
-    "pytest-asyncio==0.25.3",
+    "pytest==9.2.0",
+    "pytest-asyncio==1.5.0",
     "ruff==0.9.9",
     "mypy==1.15.0",
     "PyYAML==6.0.2",
