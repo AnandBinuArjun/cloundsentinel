@@ -1,0 +1,83 @@
+name: CloudSentinel Release
+
+# Release policy:
+# - Requires explicit manual approval via GitHub Environment protection rules.
+# - Builds immutable versioned images, generates SBOMs, and scans artifacts.
+# - NEVER deploys automatically to external AWS or Azure accounts.
+# - Pin all third-party actions to reviewed commit SHAs before production release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Semantic release tag (e.g., 0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  build-scan-and-publish:
+    name: Build, Scan, SBOM & Publish Immutable Images
+    runs-on: ubuntu-latest
+    environment: production-release
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build API, Worker & Web images
+        env:
+          VERSION: ${{ inputs.release_version }}
+          REPO: ${{ github.repository }}
+        run: |
+          LOWER_REPO=$(echo "$REPO" | tr '[:upper:]' '[:lower:]')
+          docker build -f infrastructure/docker/Dockerfile.api -t "ghcr.io/${LOWER_REPO}/api:${VERSION}" .
+          docker build -f infrastructure/docker/Dockerfile.worker -t "ghcr.io/${LOWER_REPO}/worker:${VERSION}" .
+          docker build -f infrastructure/docker/Dockerfile.web -t "ghcr.io/${LOWER_REPO}/web:${VERSION}" .
+
+      - name: Generate CycloneDX SBOM for API image
+        env:
+          VERSION: ${{ inputs.release_version }}
+          REPO: ${{ github.repository }}
+        run: |
+          LOWER_REPO=$(echo "$REPO" | tr '[:upper:]' '[:lower:]')
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.58.1 image --format cyclonedx \
+            "ghcr.io/${LOWER_REPO}/api:${VERSION}" > api-sbom.cdx.json
+
+      - name: Scan release API image with Trivy
+        env:
+          VERSION: ${{ inputs.release_version }}
+          REPO: ${{ github.repository }}
+        run: |
+          LOWER_REPO=$(echo "$REPO" | tr '[:upper:]' '[:lower:]')
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.58.1 image --exit-code 1 --ignore-unfixed --severity CRITICAL,HIGH \
+            "ghcr.io/${LOWER_REPO}/api:${VERSION}"
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudsentinel-sbom-${{ inputs.release_version }}
+          path: api-sbom.cdx.json
+
+      - name: Push versioned images to GHCR
+        env:
+          VERSION: ${{ inputs.release_version }}
+          REPO: ${{ github.repository }}
+        run: |
+          LOWER_REPO=$(echo "$REPO" | tr '[:upper:]' '[:lower:]')
+          docker push "ghcr.io/${LOWER_REPO}/api:${VERSION}"
+          docker push "ghcr.io/${LOWER_REPO}/worker:${VERSION}"
+          docker push "ghcr.io/${LOWER_REPO}/web:${VERSION}"

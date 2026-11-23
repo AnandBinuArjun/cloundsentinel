@@ -1,0 +1,52 @@
+name: CloudSentinel Isolated Cloud Lab (Prowler)
+
+# Manual, approval-gated workflow ONLY.
+# NEVER triggered on pull requests or pushes. Requires human-approved isolated sandbox
+# OIDC credentials configured in the `cloud-lab-sandbox` GitHub Environment.
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: "Sandbox provider to scan (aws or azure)"
+        required: true
+        type: choice
+        options:
+          - aws
+          - azure
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  prowler-sandbox-assessment:
+    name: Prowler Read-Only Sandbox Assessment
+    runs-on: ubuntu-latest
+    environment: cloud-lab-sandbox
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Prowler
+        run: pip install prowler==5.2.0
+
+      - name: Run Prowler against isolated sandbox (read-only)
+        env:
+          PROVIDER: ${{ inputs.provider }}
+        run: |
+          echo "Running read-only Prowler assessment for isolated sandbox provider: ${PROVIDER}"
+          prowler "${PROVIDER}" --output-formats json-ocsf --output-directory prowler-output || true
+
+      - name: Upload Prowler sandbox report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: prowler-sandbox-report-${{ inputs.provider }}
+          path: prowler-output/
+          if-no-files-found: warn

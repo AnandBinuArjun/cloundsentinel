@@ -1,0 +1,86 @@
+[build-system]
+requires = ["setuptools==75.8.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cloudsentinel"
+version = "1.0.0"
+description = "CloudSentinel — Multi-Cloud Security Posture Management & Threat Detection Platform"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.115.12",
+    "uvicorn[standard]==0.34.0",
+    "pydantic==2.10.6",
+    "pydantic-settings==2.8.1",
+    "sqlalchemy[asyncio]==2.0.38",
+    "asyncpg==0.30.0",
+    "aiosqlite==0.21.0",
+    "alembic==1.14.1",
+    "redis==5.2.1",
+    "celery==5.4.0",
+    "httpx==0.28.1",
+    "PyJWT[crypto]==2.10.1",
+    "boto3==1.36.26",
+    "azure-identity==1.20.0",
+    "fpdf2==2.8.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.5",
+    "pytest-asyncio==0.25.3",
+    "ruff==0.9.9",
+    "mypy==1.15.0",
+    "PyYAML==6.0.2",
+    "types-PyYAML==6.0.12.20241230",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["apps*", "packages*", "cloud_connectors*", "detections*", "compliance*"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "S", "ASYNC"]
+ignore = ["B008", "E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "S105", "S106"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+exclude = ["database/migrations"]
+
+[[tool.mypy.overrides]]
+module = [
+    "celery.*",
+    "asyncpg.*",
+    "aiosqlite.*",
+    "redis.*",
+    "boto3.*",
+    "botocore.*",
+    "azure.*",
+    "fpdf.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "unit: fast deterministic unit tests",
+    "integration: API, database, and worker integration tests",
+    "security: security control and hardening tests",
+    "cloud_lab: isolated AWS/Azure sandbox tests (never run in public CI)",
+]

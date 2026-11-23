@@ -1,0 +1,1 @@
+"""CloudSentinel Celery background worker."""

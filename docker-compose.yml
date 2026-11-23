@@ -1,0 +1,116 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cloudsentinel}
+      POSTGRES_USER: ${POSTGRES_USER:-cloudsentinel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_local_dev_only}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - cloudsentinel_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cloudsentinel} -d ${POSTGRES_DB:-cloudsentinel}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - cloudsentinel_net
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - cloudsentinel_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - cloudsentinel_net
+
+  api:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.api
+    restart: unless-stopped
+    environment:
+      CLOUDSENTINEL_ENV: ${CLOUDSENTINEL_ENV:-development}
+      CLOUDSENTINEL_LOG_LEVEL: ${CLOUDSENTINEL_LOG_LEVEL:-INFO}
+      CLOUDSENTINEL_CORS_ORIGINS: ${CLOUDSENTINEL_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-cloudsentinel}:${POSTGRES_PASSWORD:-change_me_local_dev_only}@postgres:5432/${POSTGRES_DB:-cloudsentinel}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - cloudsentinel_net
+
+  worker:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.worker
+    restart: unless-stopped
+    environment:
+      CLOUDSENTINEL_ENV: ${CLOUDSENTINEL_ENV:-development}
+      CLOUDSENTINEL_LOG_LEVEL: ${CLOUDSENTINEL_LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-cloudsentinel}:${POSTGRES_PASSWORD:-change_me_local_dev_only}@postgres:5432/${POSTGRES_DB:-cloudsentinel}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - cloudsentinel_net
+
+  web:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.web
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5173:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - cloudsentinel_net
+
+volumes:
+  cloudsentinel_pgdata:
+  cloudsentinel_redisdata:
+
+networks:
+  cloudsentinel_net:
+    driver: bridge

@@ -1,0 +1,27 @@
+:root {
+  /* Backgrounds */
+  --cs-bg-canvas: #080d14;
+  --cs-bg-sidebar: #0c121b;
+  --cs-bg-surface: #111925;
+  --cs-bg-elevated: #172131;
+  --cs-bg-hover: #1c293a;
+  --cs-border: #243142;
+
+  /* Typography */
+  --cs-text-primary: #f1f5f9;
+  --cs-text-secondary: #a0aec0;
+  --cs-text-muted: #64748b;
+  --cs-accent: #00d6a0;
+
+  /* Semantic status */
+  --cs-success: #10b981;
+  --cs-info: #38bdf8;
+  --cs-warning: #f59e0b;
+  --cs-high: #f97316;
+  --cs-critical: #f43f5e;
+  --cs-neutral: #94a3b8;
+
+  /* Geometry */
+  --cs-radius-card: 12px;
+  --cs-radius-control: 8px;
+}

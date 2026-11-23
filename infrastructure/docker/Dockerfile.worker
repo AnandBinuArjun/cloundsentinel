@@ -1,0 +1,45 @@
+# syntax=docker/dockerfile:1.7
+
+FROM python:3.12.10-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /build
+
+COPY pyproject.toml LICENSE README.md ./
+COPY apps ./apps
+COPY packages ./packages
+COPY cloud_connectors ./cloud_connectors
+COPY detections ./detections
+COPY compliance ./compliance
+
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --upgrade pip \
+    && /opt/venv/bin/pip install .
+
+FROM python:3.12.10-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:$PATH"
+
+RUN groupadd --system --gid 10001 cloudsentinel \
+    && useradd --system --uid 10001 --gid cloudsentinel --home-dir /app --shell /sbin/nologin cloudsentinel
+
+WORKDIR /app
+
+COPY --from=builder /opt/venv /opt/venv
+COPY --chown=cloudsentinel:cloudsentinel apps ./apps
+COPY --chown=cloudsentinel:cloudsentinel packages ./packages
+COPY --chown=cloudsentinel:cloudsentinel cloud_connectors ./cloud_connectors
+COPY --chown=cloudsentinel:cloudsentinel detections ./detections
+COPY --chown=cloudsentinel:cloudsentinel compliance ./compliance
+
+USER cloudsentinel
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "from apps.worker.celery_app import ping; assert ping()['status'] == 'pong'"
+
+CMD ["celery", "-A", "apps.worker.celery_app:celery_app", "worker", "--loglevel=info"]

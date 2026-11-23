@@ -1,0 +1,22 @@
+{
+  "Name": "CloudSentinel Read-Only Security Assessor",
+  "IsCustom": true,
+  "Description": "Least-privilege read-only role for CloudSentinel Azure posture assessments. Never requires Global Administrator or Contributor.",
+  "Actions": [
+    "Microsoft.Resources/subscriptions/read",
+    "Microsoft.Compute/virtualMachines/read",
+    "Microsoft.Storage/storageAccounts/read",
+    "Microsoft.Storage/storageAccounts/blobServices/containers/read",
+    "Microsoft.Network/networkSecurityGroups/read",
+    "Microsoft.Network/virtualNetworks/read",
+    "Microsoft.Authorization/roleAssignments/read",
+    "Microsoft.Authorization/roleDefinitions/read",
+    "Microsoft.KeyVault/vaults/read",
+    "Microsoft.Insights/diagnosticSettings/read",
+    "Microsoft.Security/pricings/read",
+    "Microsoft.Security/assessments/read"
+  ],
+  "NotActions": [],
+  "DataActions": [],
+  "NotDataActions": []
+}

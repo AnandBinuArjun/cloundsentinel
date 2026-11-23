@@ -1,0 +1,178 @@
+name: CloudSentinel CI
+
+# Supply-chain note: Pin all third-party actions to reviewed immutable commit SHAs
+# prior to production release.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  backend-quality-and-tests:
+    name: Backend Lint, Types, SAST & Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: cloudsentinel_test
+          POSTGRES_USER: cloudsentinel
+          POSTGRES_PASSWORD: ci_ephemeral_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies & security linters
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" bandit==1.8.3 pip-audit==2.8.0
+
+      - name: Ruff format check
+        run: ruff format --check apps packages cloud_connectors detections compliance tests database/seeds
+
+      - name: Ruff lint
+        run: ruff check apps packages cloud_connectors detections compliance tests database/seeds
+
+      - name: Mypy strict type check
+        run: mypy apps packages cloud_connectors detections compliance
+
+      - name: Bandit SAST scan
+        run: bandit -r apps packages cloud_connectors detections compliance -ll
+
+      - name: Python dependency vulnerability audit (pip-audit)
+        run: pip-audit --strict --progress-spinner off
+        continue-on-error: true
+
+      - name: Apply Alembic migrations against PostgreSQL 16 (including RLS)
+        env:
+          DATABASE_URL: postgresql+asyncpg://cloudsentinel:ci_ephemeral_password@127.0.0.1:5432/cloudsentinel_test
+        run: alembic -c database/migrations/alembic.ini upgrade head
+
+      - name: Run unit, integration & security tests
+        env:
+          CLOUDSENTINEL_ENV: test
+          DATABASE_URL: postgresql+asyncpg://cloudsentinel:ci_ephemeral_password@127.0.0.1:5432/cloudsentinel_test
+          REDIS_URL: redis://127.0.0.1:6379/0
+        run: pytest -v -m "not cloud_lab"
+
+  frontend-quality-and-build:
+    name: Frontend Typecheck, Audit, Tests & Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Audit frontend dependencies (high/critical)
+        run: npm audit --audit-level=high
+
+      - name: TypeScript typecheck
+        run: npm run typecheck
+
+      - name: Run frontend unit tests
+        run: npm test
+
+      - name: Build production bundle
+        run: npm run build
+
+  security-and-infra-checks:
+    name: Secret, SAST, OPA, Terraform, Checkov & Trivy Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate Docker Compose configuration
+        run: docker compose config -q
+
+      - name: Gitleaks secret scanning
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Semgrep SAST scan
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: p/python p/typescript p/owasp-top-ten
+
+      - name: Install & test OPA Rego policies
+        uses: open-policy-agent/setup-opa@v2
+        with:
+          version: 1.0.1
+
+      - name: Run OPA unit tests
+        run: opa test policies/opa -v
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+
+      - name: Validate AWS & Azure Terraform lab formatting and syntax
+        run: |
+          terraform fmt -check -recursive infrastructure/terraform
+          terraform -chdir=infrastructure/terraform/aws init -backend=false
+          terraform -chdir=infrastructure/terraform/aws validate
+          terraform -chdir=infrastructure/terraform/azure init -backend=false
+          terraform -chdir=infrastructure/terraform/azure validate
+
+      - name: Checkov Dockerfile & IaC scan
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: infrastructure
+          framework: dockerfile,terraform
+          soft_fail: true
+
+      - name: Build API container image for Trivy scan
+        run: docker build -f infrastructure/docker/Dockerfile.api -t cloudsentinel-api:ci .
+
+      - name: Trivy container vulnerability scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: cloudsentinel-api:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH

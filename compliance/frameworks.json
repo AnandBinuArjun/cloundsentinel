@@ -1,0 +1,190 @@
+{
+  "schema_version": "1.0.0",
+  "disclaimer": "Technical cloud posture checks provide partial, automated control evidence only. Passing technical checks NEVER establishes full organizational compliance with CIS, NIST CSF 2.0, or ISO/IEC 27001:2022.",
+  "frameworks": [
+    {
+      "id": "cis-aws-3.0",
+      "name": "CIS AWS Foundations Benchmark",
+      "version": "3.0.0",
+      "description": "Prescriptive security configuration baseline for Amazon Web Services.",
+      "controls": [
+        {
+          "control_id": "CIS-AWS-1.10",
+          "title": "Ensure MFA is enabled for all IAM users with a console password",
+          "rule_ids": ["AWS-IAM-002"],
+          "rationale": "Reduces credential stuffing and account takeover risk for console users.",
+          "coverage_status": "automated_technical",
+          "limitations": "Does not validate IdP/SAML MFA enforcement outside native IAM users."
+        },
+        {
+          "control_id": "CIS-AWS-1.16",
+          "title": "Ensure IAM policies with full '*:*' administrative privileges are not attached",
+          "rule_ids": ["AWS-IAM-001"],
+          "rationale": "Enforces least privilege and limits blast radius of compromised identities.",
+          "coverage_status": "partial_technical",
+          "limitations": "Evaluates policy JSON directly; does not compute SCP or permission boundary overrides."
+        },
+        {
+          "control_id": "CIS-AWS-2.1.4",
+          "title": "Ensure S3 buckets are configured with Block Public Access",
+          "rule_ids": ["AWS-S3-001", "AWS-S3-003"],
+          "rationale": "Prevents unintended public exposure of object storage.",
+          "coverage_status": "automated_technical",
+          "limitations": "Does not verify application-layer pre-signed URL exposure."
+        },
+        {
+          "control_id": "CIS-AWS-2.2.1",
+          "title": "Ensure EBS volume encryption is enabled",
+          "rule_ids": ["AWS-EBS-001"],
+          "rationale": "Protects block storage data at rest.",
+          "coverage_status": "automated_technical",
+          "limitations": "Does not evaluate KMS key rotation policies or key grants."
+        },
+        {
+          "control_id": "CIS-AWS-3.1",
+          "title": "Ensure CloudTrail is enabled in all regions",
+          "rule_ids": ["AWS-CT-001"],
+          "rationale": "Maintains multi-region API audit logging for detection and forensics.",
+          "coverage_status": "partial_technical",
+          "limitations": "Does not verify S3 bucket log retention immutability or SIEM ingestion latency."
+        },
+        {
+          "control_id": "CIS-AWS-5.2",
+          "title": "Ensure no security groups allow ingress from 0.0.0.0/0 to remote admin ports",
+          "rule_ids": ["AWS-EC2-001", "AWS-EC2-002"],
+          "rationale": "Reduces direct internet brute-force and exploit exposure on SSH/RDP.",
+          "coverage_status": "automated_technical",
+          "limitations": "Does not evaluate NACL or transit gateway routing reachability."
+        }
+      ]
+    },
+    {
+      "id": "cis-azure-2.1",
+      "name": "CIS Microsoft Azure Foundations Benchmark",
+      "version": "2.1.0",
+      "description": "Prescriptive security configuration baseline for Microsoft Azure subscriptions.",
+      "controls": [
+        {
+          "control_id": "CIS-AZURE-1.23",
+          "title": "Ensure subscription Owner/privileged RBAC roles are minimized",
+          "rule_ids": ["AZ-IAM-001"],
+          "rationale": "Limits standing privileged access at subscription scope.",
+          "coverage_status": "partial_technical",
+          "limitations": "Does not inspect Entra ID PIM eligible roles without Graph PrivilegedAccess permissions."
+        },
+        {
+          "control_id": "CIS-AZURE-2.1.1",
+          "title": "Ensure Microsoft Defender for Cloud is enabled",
+          "rule_ids": ["AZ-MON-002"],
+          "rationale": "Provides native cloud workload and posture alerting.",
+          "coverage_status": "partial_technical",
+          "limitations": "Checks subscription pricing tier only; does not verify alert response playbooks."
+        },
+        {
+          "control_id": "CIS-AZURE-3.7",
+          "title": "Ensure public anonymous blob access is disabled on Storage Accounts",
+          "rule_ids": ["AZ-STG-001", "AZ-STG-002", "AZ-STG-003"],
+          "rationale": "Prevents unauthenticated blob downloads and enforces encrypted transport.",
+          "coverage_status": "automated_technical",
+          "limitations": "Does not inspect Shared Access Signature (SAS) token expiration hygiene."
+        },
+        {
+          "control_id": "CIS-AZURE-5.1.1",
+          "title": "Ensure Activity Log Diagnostic Settings exist",
+          "rule_ids": ["AZ-MON-001"],
+          "rationale": "Preserves Azure control-plane audit logs beyond default 90-day retention.",
+          "coverage_status": "partial_technical",
+          "limitations": "Does not validate downstream Log Analytics retention duration."
+        },
+        {
+          "control_id": "CIS-AZURE-6.1",
+          "title": "Ensure NSG inbound rules restrict SSH/RDP from Internet",
+          "rule_ids": ["AZ-NET-001"],
+          "rationale": "Prevents direct internet exposure of VM management ports.",
+          "coverage_status": "automated_technical",
+          "limitations": "Does not trace Azure Firewall or effective NIC route tables."
+        },
+        {
+          "control_id": "CIS-AZURE-8.4",
+          "title": "Ensure Key Vault uses RBAC, purge protection, and private access",
+          "rule_ids": ["AZ-KV-001"],
+          "rationale": "Protects cryptographic keys and secrets from deletion and unauthorized access.",
+          "coverage_status": "partial_technical",
+          "limitations": "Does not audit individual secret expiration dates or rotation schedules."
+        }
+      ]
+    },
+    {
+      "id": "nist-csf-2.0",
+      "name": "NIST Cybersecurity Framework (CSF)",
+      "version": "2.0",
+      "description": "Outcome-based cybersecurity risk governance, protection, and detection framework.",
+      "controls": [
+        {
+          "control_id": "NIST-CSF-PR.AA-05",
+          "title": "Access permissions, entitlements, and authorizations are managed using least privilege",
+          "rule_ids": ["AWS-IAM-001", "AWS-S3-003", "AZ-IAM-001"],
+          "rationale": "Flags standing administrative wildcards and excessive RBAC bindings.",
+          "coverage_status": "partial_technical",
+          "limitations": "Organizational access review cadence and HR offboarding processes are out of scope."
+        },
+        {
+          "control_id": "NIST-CSF-PR.DS-01",
+          "title": "The confidentiality, integrity, and availability of data-at-rest are protected",
+          "rule_ids": ["AWS-S3-001", "AWS-S3-002", "AWS-EBS-001", "AZ-STG-001", "AZ-STG-003", "AZ-KV-001"],
+          "rationale": "Verifies storage public-access blocks and encryption-at-rest configurations.",
+          "coverage_status": "partial_technical",
+          "limitations": "Data classification governance and backup restoration testing are not verified automatically."
+        },
+        {
+          "control_id": "NIST-CSF-DE.CM-01",
+          "title": "Networks and network services are monitored to find potentially adverse events",
+          "rule_ids": ["AWS-CT-001", "AWS-MON-001", "AZ-MON-001", "AZ-MON-002"],
+          "rationale": "Checks whether cloud audit logging and native security monitoring are active.",
+          "coverage_status": "partial_technical",
+          "limitations": "SOC staffing, triage SLAs, and incident response drills cannot be verified by API checks."
+        }
+      ]
+    },
+    {
+      "id": "iso-27001-2022",
+      "name": "ISO/IEC 27001:2022 Annex A",
+      "version": "2022",
+      "description": "Information Security Management System (ISMS) Annex A reference controls.",
+      "controls": [
+        {
+          "control_id": "ISO27001-A.8.2",
+          "title": "Privileged access rights",
+          "rule_ids": ["AWS-IAM-001", "AZ-IAM-001"],
+          "rationale": "Detects overly broad cloud administrative privileges.",
+          "coverage_status": "partial_technical",
+          "limitations": "Technical evidence only; formal ISMS policy, management review, and audit artifacts are required."
+        },
+        {
+          "control_id": "ISO27001-A.8.15",
+          "title": "Logging",
+          "rule_ids": ["AWS-CT-001", "AZ-MON-001"],
+          "rationale": "Verifies control-plane audit log capture across AWS and Azure.",
+          "coverage_status": "partial_technical",
+          "limitations": "Does not cover application-level logs, clock synchronization, or legal retention requirements."
+        },
+        {
+          "control_id": "ISO27001-A.8.20",
+          "title": "Networks security",
+          "rule_ids": ["AWS-EC2-001", "AWS-EC2-002", "AZ-NET-001"],
+          "rationale": "Identifies unrestricted internet ingress on sensitive administrative ports.",
+          "coverage_status": "partial_technical",
+          "limitations": "Covers cloud firewall ingress rules only; does not cover IDS/IPS or physical network controls."
+        },
+        {
+          "control_id": "ISO27001-A.8.24",
+          "title": "Use of cryptography",
+          "rule_ids": ["AWS-S3-002", "AWS-EBS-001", "AZ-STG-002", "AZ-STG-003", "AZ-KV-001"],
+          "rationale": "Checks storage/volume encryption-at-rest and TLS 1.2+ transport enforcement.",
+          "coverage_status": "partial_technical",
+          "limitations": "Cryptographic policy governance and certificate lifecycle management require manual audit."
+        }
+      ]
+    }
+  ]
+}
