@@ -9,7 +9,7 @@ _BLOCKED_HOSTS = frozenset(
     {
         "localhost",
         "127.0.0.1",
-        "0.0.0.0",  # noqa: S104
+        "0.0.0.0",  # noqa: S104  # nosec B104 - blocklist entry, not a bind address
         "::1",
         "169.254.169.254",
         "metadata.google.internal",
