@@ -1,6 +1,6 @@
 package cloudsentinel.terraform.guardrails
 
-deny[msg] {
+deny contains msg if {
     resource := input.resource_changes[_]
     resource.type == "aws_security_group_rule"
     after := resource.change.after
@@ -12,7 +12,7 @@ deny[msg] {
     msg := sprintf("AWS-EC2-001: %s exposes SSH port 22 to 0.0.0.0/0", [resource.address])
 }
 
-deny[msg] {
+deny contains msg if {
     resource := input.resource_changes[_]
     after := resource.change.after
     after.tags

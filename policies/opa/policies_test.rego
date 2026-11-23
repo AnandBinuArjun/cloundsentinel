@@ -4,7 +4,7 @@ import data.cloudsentinel.aws.s3 as aws_s3
 import data.cloudsentinel.azure.storage as az_storage
 import data.cloudsentinel.terraform.guardrails as tf_guard
 
-test_deny_public_s3_block_disabled {
+test_deny_public_s3_block_disabled if {
     msgs := aws_s3.deny with input as {
         "resource_changes": [{
             "address": "aws_s3_bucket_public_access_block.bad",
@@ -15,7 +15,7 @@ test_deny_public_s3_block_disabled {
     count(msgs) == 1
 }
 
-test_allow_secure_s3_block {
+test_allow_secure_s3_block if {
     msgs := aws_s3.deny with input as {
         "resource_changes": [{
             "address": "aws_s3_bucket_public_access_block.good",
@@ -26,7 +26,7 @@ test_allow_secure_s3_block {
     count(msgs) == 0
 }
 
-test_deny_azure_public_blob_and_weak_tls {
+test_deny_azure_public_blob_and_weak_tls if {
     msgs := az_storage.deny with input as {
         "resource_changes": [{
             "address": "azurerm_storage_account.bad",
@@ -37,7 +37,7 @@ test_deny_azure_public_blob_and_weak_tls {
     count(msgs) == 2
 }
 
-test_deny_unrestricted_ssh_ingress {
+test_deny_unrestricted_ssh_ingress if {
     msgs := tf_guard.deny with input as {
         "resource_changes": [{
             "address": "aws_security_group_rule.ssh_open",

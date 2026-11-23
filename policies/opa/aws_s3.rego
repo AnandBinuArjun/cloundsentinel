@@ -1,6 +1,6 @@
 package cloudsentinel.aws.s3
 
-deny[msg] {
+deny contains msg if {
     resource := input.resource_changes[_]
     resource.type == "aws_s3_bucket_public_access_block"
     after := resource.change.after
@@ -8,7 +8,7 @@ deny[msg] {
     msg := sprintf("AWS-S3-001: %s must set block_public_acls = true", [resource.address])
 }
 
-deny[msg] {
+deny contains msg if {
     resource := input.resource_changes[_]
     resource.type == "aws_s3_bucket_public_access_block"
     after := resource.change.after

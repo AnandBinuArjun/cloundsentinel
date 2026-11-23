@@ -1,6 +1,6 @@
 package cloudsentinel.azure.storage
 
-deny[msg] {
+deny contains msg if {
     resource := input.resource_changes[_]
     resource.type == "azurerm_storage_account"
     after := resource.change.after
@@ -8,7 +8,7 @@ deny[msg] {
     msg := sprintf("AZ-STG-001: %s must disable anonymous public blob access", [resource.address])
 }
 
-deny[msg] {
+deny contains msg if {
     resource := input.resource_changes[_]
     resource.type == "azurerm_storage_account"
     after := resource.change.after
