@@ -168,11 +168,12 @@ jobs:
       - name: Build API container image for Trivy scan
         run: docker build -f infrastructure/docker/Dockerfile.api -t cloudsentinel-api:ci .
 
+      # Runs Trivy from its official pinned container image rather than a third-party
+      # action (the action's setup-trivy dependency tag was removed upstream).
       - name: Trivy container vulnerability scan
-        uses: aquasecurity/trivy-action@v0.28.0
-        with:
-          image-ref: cloudsentinel-api:ci
-          format: table
-          exit-code: "1"
-          ignore-unfixed: true
-          severity: CRITICAL,HIGH
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.58.2 image \
+            --exit-code 1 --ignore-unfixed --severity CRITICAL,HIGH \
+            --format table cloudsentinel-api:ci
