@@ -33,18 +33,50 @@ TENANT_SCOPED_TABLES: tuple[str, ...] = (
 )
 
 
+def _add_column_if_missing(
+    inspector: sa.Inspector,
+    table_name: str,
+    column: sa.Column[object],
+) -> None:
+    existing_cols = {c["name"] for c in inspector.get_columns(table_name)}
+    if column.name not in existing_cols:
+        op.add_column(table_name, column)
+
+
+def _create_index_if_missing(
+    inspector: sa.Inspector,
+    index_name: str,
+    table_name: str,
+    columns: list[str],
+) -> None:
+    existing_idx = {idx["name"] for idx in inspector.get_indexes(table_name)}
+    if index_name not in existing_idx:
+        op.create_index(index_name, table_name, columns)
+
+
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+
     # 1. Assessment orchestration columns (Phase 3)
-    op.add_column("assessment_runs", sa.Column("job_id", sa.String(length=128), nullable=True))
-    op.add_column(
-        "assessment_runs", sa.Column("idempotency_key", sa.String(length=128), nullable=True)
+    _add_column_if_missing(
+        inspector, "assessment_runs", sa.Column("job_id", sa.String(length=128), nullable=True)
     )
-    op.add_column(
+    _add_column_if_missing(
+        inspector,
+        "assessment_runs",
+        sa.Column("idempotency_key", sa.String(length=128), nullable=True),
+    )
+    _add_column_if_missing(
+        inspector,
         "assessment_runs",
         sa.Column("progress_pct", sa.Integer(), nullable=False, server_default="0"),
     )
-    op.add_column("assessment_runs", sa.Column("failure_reason", sa.Text(), nullable=True))
-    op.add_column(
+    _add_column_if_missing(
+        inspector, "assessment_runs", sa.Column("failure_reason", sa.Text(), nullable=True)
+    )
+    _add_column_if_missing(
+        inspector,
         "assessment_runs",
         sa.Column(
             "queued_at",
@@ -53,15 +85,19 @@ def upgrade() -> None:
             server_default=sa.text("CURRENT_TIMESTAMP"),
         ),
     )
-    op.add_column(
+    _add_column_if_missing(
+        inspector,
         "assessment_runs",
         sa.Column("cancelled_at", sa.DateTime(timezone=True), nullable=True),
     )
-    op.create_index("ix_assessment_runs_job_id", "assessment_runs", ["job_id"])
-    op.create_index("ix_assessment_runs_idempotency_key", "assessment_runs", ["idempotency_key"])
+    _create_index_if_missing(inspector, "ix_assessment_runs_job_id", "assessment_runs", ["job_id"])
+    _create_index_if_missing(
+        inspector, "ix_assessment_runs_idempotency_key", "assessment_runs", ["idempotency_key"]
+    )
 
     # 2. Detection deduplication column & index (Phase 7)
-    op.add_column(
+    _add_column_if_missing(
+        inspector,
         "detection_events",
         sa.Column(
             "provider_event_id",
@@ -70,31 +106,37 @@ def upgrade() -> None:
             server_default="",
         ),
     )
-    op.create_index(
+    _create_index_if_missing(
+        inspector,
         "ix_detection_events_provider_event_id",
         "detection_events",
         ["provider_event_id"],
     )
-    op.create_index(
+    _create_index_if_missing(
+        inspector,
         "ix_detection_events_dedup",
         "detection_events",
         ["tenant_id", "provider", "provider_event_id", "rule_id"],
     )
 
     # 3. Remediation state machine & verification columns (Phase 1)
-    op.add_column(
+    _add_column_if_missing(
+        inspector,
         "remediation_requests",
         sa.Column("idempotency_key", sa.String(length=128), nullable=True),
     )
-    op.add_column(
+    _add_column_if_missing(
+        inspector,
         "remediation_requests",
         sa.Column("operation_id", sa.String(length=128), nullable=True),
     )
-    op.add_column(
+    _add_column_if_missing(
+        inspector,
         "remediation_requests",
         sa.Column("verification_rule_id", sa.String(length=64), nullable=True),
     )
-    op.add_column(
+    _add_column_if_missing(
+        inspector,
         "remediation_requests",
         sa.Column(
             "verification_status",
@@ -103,26 +145,29 @@ def upgrade() -> None:
             server_default="unverified",
         ),
     )
-    op.add_column(
+    _add_column_if_missing(
+        inspector,
         "remediation_requests",
         sa.Column("failure_reason", sa.Text(), nullable=True),
     )
-    op.add_column(
+    _add_column_if_missing(
+        inspector,
         "remediation_requests",
         sa.Column("executed_at", sa.DateTime(timezone=True), nullable=True),
     )
-    op.add_column(
+    _add_column_if_missing(
+        inspector,
         "remediation_requests",
         sa.Column("verified_at", sa.DateTime(timezone=True), nullable=True),
     )
-    op.create_index(
+    _create_index_if_missing(
+        inspector,
         "ix_remediation_requests_idempotency_key",
         "remediation_requests",
         ["idempotency_key"],
     )
 
     # 4. PostgreSQL FORCE ROW LEVEL SECURITY, WITH CHECK, and non-owner application role (Phase 2)
-    bind = op.get_bind()
     if bind.dialect.name != "postgresql":
         return
 
