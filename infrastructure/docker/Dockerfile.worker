@@ -25,6 +25,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH"
 
+# Apply available Debian security updates to the pinned base image (keeps Trivy clean).
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --system --gid 10001 cloudsentinel \
     && useradd --system --uid 10001 --gid cloudsentinel --home-dir /app --shell /sbin/nologin cloudsentinel
 
