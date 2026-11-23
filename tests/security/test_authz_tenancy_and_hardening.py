@@ -141,7 +141,7 @@ async def test_cross_tenant_isolation_denies_all_cross_tenant_reads_and_writes()
         run_resp = await client.post(
             "/api/v1/assessments", headers=h_a, json={"connection_id": conn_a_id}
         )
-        assert run_resp.status_code == 201
+        assert run_resp.status_code == 202
         finding_a_id = (await client.get("/api/v1/findings", headers=h_a)).json()["items"][0]["id"]
 
         # Tenant B must see ZERO of Tenant A's resources and receive 404 on direct ID access

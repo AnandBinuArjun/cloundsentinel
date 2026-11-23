@@ -11,7 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.services.audit import record_audit_event
 from apps.api.services.remediation_service import (
+    UnsupportedRemediationOperationError,
     approve_remediation,
+    cancel_remediation,
     execute_remediation,
     preview_remediation,
 )
@@ -43,6 +45,7 @@ from packages.contracts.domain import (
 from packages.db.models import (
     AssessmentResult,
     AssessmentRun,
+    CloudConnection,
     DetectionEvent,
     DetectionRule,
     Finding,
@@ -63,16 +66,71 @@ async def ingest_detection_events(
     auth: AuthContext = Depends(require_permissions(Permission.DETECTIONS_WRITE)),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
-    normalized = [
-        normalize_aws_cloudtrail_event(ev, data_source=payload.data_source)
-        if payload.provider == "aws"
-        else normalize_azure_activity_event(ev, data_source=payload.data_source)
-        for ev in payload.events
-    ]
+    try:
+        normalized = [
+            normalize_aws_cloudtrail_event(ev, data_source=payload.data_source)
+            if payload.provider == "aws"
+            else normalize_azure_activity_event(ev, data_source=payload.data_source)
+            for ev in payload.events
+        ]
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+    # Verify every event account_ref belongs to a registered CloudConnection in this tenant
+    tenant_conns = list(
+        (
+            await session.execute(
+                select(CloudConnection).where(
+                    CloudConnection.tenant_id == auth.tenant_id,
+                    CloudConnection.provider == payload.provider,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    conn_by_account: dict[str, CloudConnection] = {
+        c.account_or_subscription_id: c for c in tenant_conns
+    }
+    for ev_item in normalized:
+        if ev_item.account_ref not in conn_by_account:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"Event account_ref '{ev_item.account_ref}' does not belong to any registered "
+                    f"{payload.provider} cloud connection in this tenant."
+                ),
+            )
+
     triggered = evaluate_events(normalized)
 
     created_rows: list[DetectionEvent] = []
+    duplicates_skipped = 0
+    seen_in_batch: set[tuple[str, str]] = set()
     for item in triggered:
+        dedup_pair = (item.event.event_id, item.rule.rule_id)
+        if dedup_pair in seen_in_batch:
+            duplicates_skipped += 1
+            continue
+        seen_in_batch.add(dedup_pair)
+
+        existing_det = (
+            await session.execute(
+                select(DetectionEvent).where(
+                    DetectionEvent.tenant_id == auth.tenant_id,
+                    DetectionEvent.provider == item.event.provider,
+                    DetectionEvent.provider_event_id == item.event.event_id,
+                    DetectionEvent.rule_id == item.rule.rule_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing_det is not None:
+            duplicates_skipped += 1
+            continue
+
         existing_rule = await session.get(DetectionRule, item.rule.rule_id)
         if existing_rule is None:
             session.add(
@@ -90,9 +148,18 @@ async def ingest_detection_events(
             )
             await session.flush()
 
+        # Prevent synthetic connections from spoofing live event provenance
+        matched_conn = conn_by_account[item.event.account_ref]
+        effective_data_source = (
+            "synthetic_fixture"
+            if matched_conn.data_source == "synthetic_fixture"
+            else item.event.data_source
+        )
+
         row = DetectionEvent(
             tenant_id=auth.tenant_id,
             rule_id=item.rule.rule_id,
+            provider_event_id=item.event.event_id,
             provider=item.event.provider,
             account_ref=item.event.account_ref,
             region=item.event.region,
@@ -108,7 +175,7 @@ async def ingest_detection_events(
             disposition="open",
             correlated_event_ids=item.correlated_event_ids,
             evidence_payload=redact_data(item.evidence_payload),
-            data_source=item.event.data_source,
+            data_source=effective_data_source,
             event_time=item.event.event_time,
         )
         session.add(row)
@@ -124,6 +191,7 @@ async def ingest_detection_events(
         details={
             "events_received": len(payload.events),
             "detections_triggered": len(created_rows),
+            "duplicates_skipped": duplicates_skipped,
             "data_source": payload.data_source,
         },
     )
@@ -131,6 +199,7 @@ async def ingest_detection_events(
     return {
         "events_processed": len(normalized),
         "detections_triggered": len(created_rows),
+        "duplicates_skipped": duplicates_skipped,
         "items": [
             DetectionEventResponse.model_validate(r, from_attributes=True).model_dump(mode="json")
             for r in created_rows
@@ -232,16 +301,41 @@ async def update_detection_disposition(
     return DetectionEventResponse.model_validate(row, from_attributes=True)
 
 
-@router.get("/compliance", summary="Compliance framework mappings & posture with limitations")
-async def get_compliance_posture(
-    framework_id: str | None = None,
-    auth: AuthContext = Depends(require_permissions(Permission.COMPLIANCE_READ)),
-    session: AsyncSession = Depends(get_db_session),
-) -> dict[str, Any]:
+async def _latest_run_results_by_rule(
+    session: AsyncSession, tenant_id: uuid.UUID
+) -> dict[str, list[str]]:
+    """Aggregate AssessmentResult statuses scoped to the latest completed/partial run per connection."""
+    runs = list(
+        (
+            await session.execute(
+                select(AssessmentRun)
+                .where(
+                    AssessmentRun.tenant_id == tenant_id,
+                    AssessmentRun.status.in_(("completed", "completed_with_warnings", "partial")),
+                )
+                .order_by(desc(AssessmentRun.started_at))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    latest_run_ids: list[uuid.UUID] = []
+    seen_connections: set[uuid.UUID] = set()
+    for r in runs:
+        if r.connection_id not in seen_connections:
+            seen_connections.add(r.connection_id)
+            latest_run_ids.append(r.id)
+
+    if not latest_run_ids:
+        return {}
+
     rows = list(
         (
             await session.execute(
-                select(AssessmentResult).where(AssessmentResult.tenant_id == auth.tenant_id)
+                select(AssessmentResult).where(
+                    AssessmentResult.tenant_id == tenant_id,
+                    AssessmentResult.assessment_run_id.in_(latest_run_ids),
+                )
             )
         )
         .scalars()
@@ -250,7 +344,16 @@ async def get_compliance_posture(
     results_by_rule: dict[str, list[str]] = {}
     for row in rows:
         results_by_rule.setdefault(row.rule_id, []).append(row.status)
+    return results_by_rule
 
+
+@router.get("/compliance", summary="Compliance framework mappings & posture with limitations")
+async def get_compliance_posture(
+    framework_id: str | None = None,
+    auth: AuthContext = Depends(require_permissions(Permission.COMPLIANCE_READ)),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    results_by_rule = await _latest_run_results_by_rule(session, auth.tenant_id)
     posture = compute_compliance_posture(results_by_rule)
     if framework_id:
         posture["frameworks"] = [fw for fw in posture["frameworks"] if fw["id"] == framework_id]
@@ -360,18 +463,7 @@ async def export_report(
             for r in rems
         ]
     elif report_type == "compliance":
-        res_rows = list(
-            (
-                await session.execute(
-                    select(AssessmentResult).where(AssessmentResult.tenant_id == auth.tenant_id)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        by_rule: dict[str, list[str]] = {}
-        for r in res_rows:
-            by_rule.setdefault(r.rule_id, []).append(r.status)
+        by_rule = await _latest_run_results_by_rule(session, auth.tenant_id)
         posture = compute_compliance_posture(by_rule)
         for fw in posture["frameworks"]:
             for ctrl in fw["controls"]:
@@ -467,7 +559,17 @@ async def preview_remediation_endpoint(
     if finding is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Finding not found.")
 
-    req = await preview_remediation(session, auth=auth, finding=finding)
+    try:
+        req = await preview_remediation(
+            session,
+            auth=auth,
+            finding=finding,
+            idempotency_key=payload.idempotency_key,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
     return RemediationResponse.model_validate(req, from_attributes=True)
 
 
@@ -497,6 +599,37 @@ async def approve_remediation_endpoint(
             remediation=remediation,
             decision=payload.decision,
             comment=payload.comment,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return RemediationResponse.model_validate(updated, from_attributes=True)
+
+
+@router.post("/remediations/{remediation_id}/cancel", response_model=RemediationResponse)
+async def cancel_remediation_endpoint(
+    remediation_id: uuid.UUID,
+    auth: AuthContext = Depends(require_permissions(Permission.REMEDIATIONS_PREVIEW)),
+    session: AsyncSession = Depends(get_db_session),
+) -> RemediationResponse:
+    remediation = (
+        await session.execute(
+            select(RemediationRequest).where(
+                RemediationRequest.id == remediation_id,
+                RemediationRequest.tenant_id == auth.tenant_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if remediation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Remediation request not found."
+        )
+    try:
+        updated = await cancel_remediation(
+            session,
+            auth=auth,
+            remediation=remediation,
         )
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
@@ -538,6 +671,8 @@ async def execute_remediation_endpoint(
         )
 
     settings: Settings = getattr(request.app.state, "settings", get_settings())
+    provider_executor = getattr(request.app.state, "remediation_provider_executor", None)
+    posture_verifier = getattr(request.app.state, "remediation_posture_verifier", None)
     try:
         updated = await execute_remediation(
             session,
@@ -546,7 +681,12 @@ async def execute_remediation_endpoint(
             remediation=remediation,
             finding=finding,
             confirm_live=payload.confirm_live,
+            idempotency_key=payload.idempotency_key,
+            provider_executor=provider_executor,
+            posture_verifier=posture_verifier,
         )
+    except UnsupportedRemediationOperationError as exc:
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ValueError as exc:

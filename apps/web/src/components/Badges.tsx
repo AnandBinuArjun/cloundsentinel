@@ -36,14 +36,18 @@ export function StatusBadge({ status }: { status: string }) {
     normalized === "approved"
       ? "bg-[#10B981]/12 text-[#10B981] border-[#10B981]/30"
       : normalized === "fail" ||
+          normalized === "failed" ||
           normalized === "error" ||
           normalized === "open" ||
           normalized === "rejected" ||
+          normalized === "rollback_required" ||
           normalized === "true_positive"
         ? "bg-[#F43F5E]/12 text-[#F43F5E] border-[#F43F5E]/30"
-        : normalized === "not_assessed"
+        : normalized === "not_assessed" || normalized === "cancelled" || normalized === "draft"
           ? "bg-[#94A3B8]/12 text-[#94A3B8] border-[#94A3B8]/30"
-          : "bg-[#F59E0B]/12 text-[#F59E0B] border-[#F59E0B]/30";
+          : normalized === "executed_unverified" || normalized === "verifying" || normalized === "executing" || normalized === "queued" || normalized === "running"
+            ? "bg-[#38BDF8]/12 text-[#38BDF8] border-[#38BDF8]/30"
+            : "bg-[#F59E0B]/12 text-[#F59E0B] border-[#F59E0B]/30";
   return (
     <span
       className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-medium capitalize ${cls}`}

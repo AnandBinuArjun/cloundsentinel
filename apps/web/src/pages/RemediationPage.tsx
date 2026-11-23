@@ -11,14 +11,17 @@ import { ProviderBadge, StatusBadge } from "../components/Badges";
 import { MetricCard } from "../components/MetricCard";
 import { EmptyState, ErrorBanner, LoadingState, PageHeader, Panel } from "../components/UI";
 
-const STAGES = ["previewed", "approved", "verified"] as const;
+const STAGES = ["previewed", "approved", "executed_unverified", "verified"] as const;
 
 function StageStepper({ stage }: { stage: string }) {
-  const idx = STAGES.indexOf(stage as (typeof STAGES)[number]);
+  const normalized = stage === "pending_approval" ? "previewed" : stage;
+  const idx = STAGES.indexOf(normalized as (typeof STAGES)[number]);
+  const isTerminalFail = ["rejected", "failed", "cancelled", "rollback_required"].includes(stage);
   return (
-    <div className="flex items-center gap-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider">
+    <div className="flex flex-wrap items-center gap-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider">
       {STAGES.map((s, i) => {
-        const active = idx >= i && stage !== "rejected";
+        const active = idx >= i && !isTerminalFail;
+        const label = s === "executed_unverified" ? "executed (unverified)" : s;
         return (
           <div key={s} className="flex items-center gap-1.5">
             <span
@@ -28,7 +31,7 @@ function StageStepper({ stage }: { stage: string }) {
                   : "border-[#243142] bg-[#080D14] text-[#64748B]"
               }`}
             >
-              {i + 1}. {s}
+              {i + 1}. {label}
             </span>
             {i < STAGES.length - 1 && <span className="text-[#64748B]">→</span>}
           </div>
@@ -99,16 +102,17 @@ export function RemediationPage() {
     [items, stageFilter]
   );
 
-  const previewedCount = items.filter((r) => r.stage === "previewed").length;
+  const previewedCount = items.filter((r) => r.stage === "previewed" || r.stage === "pending_approval").length;
   const approvedCount = items.filter((r) => r.stage === "approved").length;
   const verifiedCount = items.filter((r) => r.stage === "verified").length;
+  const simulatedCount = items.filter((r) => r.stage === "executed_unverified").length;
 
   return (
     <div className="space-y-6">
       <PageHeader
         eyebrow="Approval-Gated Response Engine"
         title="Remediation Centre"
-        description="Preview-first workflow enforcing impact analysis, rollback guidance, human approval with separation of duties (proposer cannot self-approve), and dry-run verification by default."
+        description="Preview-first workflow enforcing impact analysis, rollback guidance, human approval with separation of duties (proposer cannot self-approve), and dry-run simulation that never marks findings resolved without live reassessment proof."
         actions={
           <select
             aria-label="Filter stage"
@@ -119,7 +123,10 @@ export function RemediationPage() {
             <option value="">All Stages</option>
             <option value="previewed">Awaiting Approval</option>
             <option value="approved">Approved (Ready)</option>
-            <option value="verified">Verified</option>
+            <option value="executed_unverified">Executed (Unverified / Dry-Run)</option>
+            <option value="verified">Verified (Reassessed PASS)</option>
+            <option value="failed">Failed</option>
+            <option value="cancelled">Cancelled</option>
             <option value="rejected">Rejected</option>
           </select>
         }
@@ -129,7 +136,7 @@ export function RemediationPage() {
         <MetricCard
           label="Total Proposals"
           value={items.length}
-          subtitle="Dry-run remediation plans"
+          subtitle={`${simulatedCount} dry-run simulated`}
           icon={Wrench}
           accent="accent"
         />
@@ -290,12 +297,17 @@ export function RemediationPage() {
                         onClick={() => executeMut.mutate(rem.id)}
                         className="inline-flex items-center gap-1.5 rounded-[8px] border border-[#00D6A0]/40 bg-[#00D6A0]/15 px-3.5 py-1.5 font-semibold text-[#00D6A0] hover:bg-[#00D6A0]/25 disabled:cursor-not-allowed disabled:opacity-45"
                       >
-                        <Play className="h-3.5 w-3.5" /> Execute Dry-Run Verification
+                        <Play className="h-3.5 w-3.5" /> Execute Dry-Run Simulation
                       </button>
+                    )}
+                    {rem.stage === "executed_unverified" && (
+                      <span className="inline-flex items-center gap-1.5 font-semibold text-[#38BDF8]">
+                        <Clock className="h-4 w-4" /> Dry-Run Simulated · Finding Remains Open Until Reassessed
+                      </span>
                     )}
                     {rem.stage === "verified" && (
                       <span className="inline-flex items-center gap-1.5 font-semibold text-[#10B981]">
-                        <ShieldCheck className="h-4 w-4" /> Verified &amp; Audited
+                        <ShieldCheck className="h-4 w-4" /> Verified by Reassessment &amp; Audited
                       </span>
                     )}
                   </div>

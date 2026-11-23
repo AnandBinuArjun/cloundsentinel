@@ -48,6 +48,12 @@ resource "aws_iam_role_policy_attachment" "security_audit" {
 
 # Controlled secure baseline S3 bucket for lab validation
 resource "aws_s3_bucket" "lab_baseline" {
+  #checkov:skip=CKV_AWS_18:Ephemeral isolated sandbox lab bucket does not require separate access-log bucket
+  #checkov:skip=CKV_AWS_21:Ephemeral isolated sandbox lab bucket does not require object versioning
+  #checkov:skip=CKV_AWS_144:Ephemeral single-region sandbox lab bucket does not require cross-region replication
+  #checkov:skip=CKV_AWS_145:Sandbox lab bucket uses SSE-S3 baseline to avoid KMS key deletion wait windows
+  #checkov:skip=CKV2_AWS_61:Ephemeral sandbox bucket is destroyed via force_destroy after lab run
+  #checkov:skip=CKV2_AWS_62:Ephemeral sandbox bucket does not require S3 event notifications
   bucket        = "${var.lab_prefix}-baseline-${var.unique_suffix}"
   force_destroy = true
 }
@@ -61,6 +67,7 @@ resource "aws_s3_bucket_public_access_block" "lab_baseline" {
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "lab_baseline" {
+  #checkov:skip=CKV2_AWS_67:Sandbox lab uses SSE-S3 default encryption without persistent KMS CMK rotation
   bucket = aws_s3_bucket.lab_baseline.id
   rule {
     apply_server_side_encryption_by_default {

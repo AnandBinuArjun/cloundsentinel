@@ -34,17 +34,44 @@ async def create_all_tables(engine: AsyncEngine) -> None:
 
 
 async def set_postgres_tenant_context(session: AsyncSession, tenant_id: uuid.UUID) -> None:
-    """Bind PostgreSQL session-local `app.current_tenant_id` for Row-Level Security defense-in-depth."""
+    """Bind PostgreSQL transaction/session `app.current_tenant_id` for Row-Level Security."""
     bind = session.get_bind()
     if bind is not None and bind.dialect.name == "postgresql":
         await session.execute(
-            text("SELECT set_config('app.current_tenant_id', :tid, true)"),
+            text("SELECT set_config('app.current_tenant_id', :tid, false)"),
             {"tid": str(tenant_id)},
         )
 
 
+async def reset_postgres_tenant_context(session: AsyncSession) -> None:
+    """Clear `app.current_tenant_id` before returning a connection to the pool."""
+    bind = session.get_bind()
+    if bind is not None and bind.dialect.name == "postgresql":
+        try:
+            await session.execute(text("SELECT set_config('app.current_tenant_id', '', false)"))
+        except Exception:
+            await session.rollback()
+
+
+async def verify_postgres_tenant_context(
+    session: AsyncSession, expected_tenant_id: uuid.UUID
+) -> None:
+    """Fail closed if PostgreSQL RLS tenant context is missing or mismatched."""
+    bind = session.get_bind()
+    if bind is not None and bind.dialect.name == "postgresql":
+        current = (
+            await session.execute(text("SELECT current_setting('app.current_tenant_id', true)"))
+        ).scalar_one_or_none()
+        if current != str(expected_tenant_id):
+            raise PermissionError("PostgreSQL RLS tenant context is missing or mismatched.")
+
+
 async def get_db_session(request: Request) -> AsyncIterator[AsyncSession]:
-    """FastAPI dependency yielding a scoped AsyncSession per request."""
+    """FastAPI dependency yielding a scoped AsyncSession with pooled-context cleanup."""
     session_factory: async_sessionmaker[AsyncSession] = request.app.state.session_factory
     async with session_factory() as session:
-        yield session
+        try:
+            await reset_postgres_tenant_context(session)
+            yield session
+        finally:
+            await reset_postgres_tenant_context(session)

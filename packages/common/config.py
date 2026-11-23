@@ -69,6 +69,16 @@ class Settings(BaseSettings):
         le=10000,
         alias="CLOUDSENTINEL_RATE_LIMIT_RPM",
     )
+    max_request_body_bytes: int = Field(
+        default=1_048_576,
+        ge=1024,
+        le=52_428_800,
+        alias="CLOUDSENTINEL_MAX_REQUEST_BODY_BYTES",
+    )
+    trusted_proxy_hosts: str = Field(
+        default="127.0.0.1,::1",
+        alias="CLOUDSENTINEL_TRUSTED_PROXY_HOSTS",
+    )
     live_remediation_enabled: bool = Field(
         default=False,
         alias="CLOUDSENTINEL_LIVE_REMEDIATION_ENABLED",
