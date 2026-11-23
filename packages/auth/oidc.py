@@ -179,12 +179,11 @@ class OIDCVerifier:
         return cookie_val, csrf_token
 
     def revoke_token(self, raw_token: str) -> None:
-        """Revoke a session or access token by recording its JTI or digest."""
+        """Revoke a session or access token by verifying its signature and recording its JTI and digest."""
         try:
-            unverified = jwt.decode(raw_token, options={"verify_signature": False})
-            jti = str(unverified.get("jti", ""))
-            if jti:
-                self._revoked_jtis.add(jti)
+            verified = self.verify_token(raw_token)
+            if verified.jti:
+                self._revoked_jtis.add(verified.jti)
         except Exception as exc:
             _ = exc
         digest = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
