@@ -152,11 +152,15 @@ def upgrade() -> None:
             END IF;
         END
         $$;
-        GRANT USAGE ON SCHEMA public TO cloudsentinel_app;
-        GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO cloudsentinel_app;
-        ALTER DEFAULT PRIVILEGES IN SCHEMA public
-            GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO cloudsentinel_app;
         """
+    )
+    op.execute("GRANT USAGE ON SCHEMA public TO cloudsentinel_app;")
+    op.execute(
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO cloudsentinel_app;"
+    )
+    op.execute(
+        "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO cloudsentinel_app;"
     )
 
 

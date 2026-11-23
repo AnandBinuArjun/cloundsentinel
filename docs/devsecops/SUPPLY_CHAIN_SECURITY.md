@@ -10,9 +10,9 @@ All third-party actions across `.github/workflows/ci.yml`, `.github/workflows/re
 | `actions/setup-python` | `a26af69be951a213d495a4c3e4e4022e16d87065` | `v5.6.0` |
 | `actions/setup-node` | `49933ea5288caeca8642d1e84afbd3f7d6820020` | `v4.4.0` |
 | `gitleaks/gitleaks-action` | `ff98106e4c7b2bc287b24eaf42907196329070c7` | `v2.3.9` |
-| `open-policy-agent/setup-opa` | `922f266ab6fc3ce9ee1fb8cd0effd6fb9ba82780` | `v2.2.0` |
+| `open-policy-agent/setup-opa` | `b2b258e089860efaadaaf71bf6e3aecb4a3eeff1` | `v2.4.0` |
 | `hashicorp/setup-terraform` | `b9cd54a3c349d3f38e8881555d616ced269862dd` | `v3.1.2` |
-| `bridgecrewio/checkov-action` | `c14f3b3fdd8bf0f9eb1cebc1c5eb44b01c8e3ed8` | `v12.2994.0` |
+| `bridgecrewio/checkov-action` | `83b08f51b20950f791f5caadcc92e336b371eb12` | `v12.3143.0` |
 | `docker/login-action` | `74a5d142397b4f367a81961eba4e8cd7edddf772` | `v3.4.0` |
 | `actions/upload-artifact` | `ea165f8d65b6e75b540449e92b4886f43607fa02` | `v4.6.2` |
 
