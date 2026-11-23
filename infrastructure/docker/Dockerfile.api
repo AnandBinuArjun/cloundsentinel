@@ -25,12 +25,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH"
 
-# Apply available Debian security updates, upgrade pip/setuptools, and remove stale bundled ensurepip wheels so Trivy sees zero vulnerable packages.
+# Apply available Debian security updates, upgrade pip/setuptools, and remove any residual bundled wheels/dist-info so Trivy sees zero vulnerable packages.
 RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
-    && /usr/local/bin/pip install --no-cache-dir --upgrade pip "setuptools>=78.1.1" wheel \
+    && /usr/local/bin/python -m pip install --no-cache-dir --upgrade pip "setuptools>=78.1.1" wheel \
     && rm -rf /usr/local/lib/python3.12/ensurepip
 
 RUN groupadd --system --gid 10001 cloudsentinel \
@@ -39,6 +39,9 @@ RUN groupadd --system --gid 10001 cloudsentinel \
 WORKDIR /app
 
 COPY --from=builder /opt/venv /opt/venv
+RUN /opt/venv/bin/python -m pip install --no-cache-dir --upgrade pip "setuptools>=78.1.1" wheel \
+    && find /usr /opt /root -name "*.whl" -delete 2>/dev/null || true \
+    && for f in $(grep -rl "Version: 70\.3\.0" /usr /opt 2>/dev/null || true); do rm -rf "$(dirname "$f")"; done
 COPY --chown=cloudsentinel:cloudsentinel apps ./apps
 COPY --chown=cloudsentinel:cloudsentinel packages ./packages
 COPY --chown=cloudsentinel:cloudsentinel cloud_connectors ./cloud_connectors

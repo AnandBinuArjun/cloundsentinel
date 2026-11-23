@@ -188,7 +188,7 @@ jobs:
               print(
                   f"::error title=Trivy {v['Severity']}::{v['VulnerabilityID']} "
                   f"{v['PkgName']} {v['InstalledVersion']} -> fixed in "
-                  f"{v.get('FixedVersion', 'n/a')} ({target})"
+                  f"{v.get('FixedVersion', 'n/a')} ({target} {v.get('PkgPath', '')})"
               )
           print(f"Trivy fixable HIGH/CRITICAL findings: {len(findings)}")
           sys.exit(1 if findings else 0)
