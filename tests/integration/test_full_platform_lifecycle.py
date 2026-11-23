@@ -120,8 +120,8 @@ async def test_full_cspm_detection_compliance_reporting_and_remediation_lifecycl
         run_az = await client.post(
             "/api/v1/assessments", headers=analyst_headers, json={"connection_id": az_conn_id}
         )
-        assert run_aws.status_code == 201 and run_aws.json()["checks_failed"] > 0
-        assert run_az.status_code == 201 and run_az.json()["checks_failed"] > 0
+        assert run_aws.status_code == 202 and run_aws.json()["checks_failed"] > 0
+        assert run_az.status_code == 202 and run_az.json()["checks_failed"] > 0
 
         # 4. Assets, Findings, Detail/Evidence & Identity Analysis
         assets = await client.get("/api/v1/assets", headers=analyst_headers)
@@ -205,8 +205,15 @@ async def test_full_cspm_detection_compliance_reporting_and_remediation_lifecycl
             json={"confirm_live": False},
         )
         assert exec_resp.status_code == 200
-        assert exec_resp.json()["stage"] == "verified"
-        assert exec_resp.json()["execution_mode"] == "dry_run_verified"
+        assert exec_resp.json()["stage"] == "executed_unverified"
+        assert exec_resp.json()["execution_mode"] == "dry_run"
+        assert exec_resp.json()["verification_status"] == "dry_run_simulated"
+
+        # Verify dry-run NEVER resolves the real finding
+        after_dry_run_finding = await client.get(
+            f"/api/v1/findings/{top_finding_id}", headers=analyst_headers
+        )
+        assert after_dry_run_finding.json()["finding"]["status"] == "open"
 
         # 8. Export JSON, CSV, and PDF reports (including external-sharing redaction)
         rep_json = await client.get(

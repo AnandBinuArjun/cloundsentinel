@@ -212,6 +212,9 @@ export interface AssessmentRunItem {
   connection_id: string;
   provider: string;
   status: string;
+  job_id?: string | null;
+  progress_pct?: number;
+  failure_reason?: string | null;
   data_source: string;
   assets_discovered: number;
   checks_passed: number;
@@ -231,6 +234,10 @@ export interface RemediationItem {
   action_type: string;
   stage: string;
   execution_mode: string;
+  operation_id?: string | null;
+  verification_rule_id?: string | null;
+  verification_status?: string;
+  failure_reason?: string | null;
   proposal: Record<string, unknown>;
   impact_analysis: Record<string, unknown>;
   rollback_guidance: string;
@@ -312,6 +319,8 @@ export const API_BASE_URL = (
 ).replace(/\/$/, "");
 
 function isRemoteStaticPreviewHost(): boolean {
+  if (import.meta.env.VITE_ENABLE_DEMO_SANDBOX === "false") return false;
+  if (import.meta.env.VITE_ENABLE_DEMO_SANDBOX === "true") return true;
   if (import.meta.env.VITE_API_BASE_URL) return false;
   if (typeof window === "undefined") return false;
   const host = window.location.hostname;
@@ -434,6 +443,14 @@ export async function triggerAssessment(connectionId: string): Promise<Assessmen
 export async function fetchAssessments(): Promise<{ total: number; items: AssessmentRunItem[] }> {
   if (isSyntheticDemoToken(getStoredToken())) return getDemoAssessments();
   return apiFetch("/api/v1/assessments");
+}
+
+export async function cancelAssessment(assessmentId: string): Promise<AssessmentRunItem> {
+  if (isSyntheticDemoToken(getStoredToken())) {
+    const items = getDemoAssessments().items;
+    return { ...(items.find((r) => r.id === assessmentId) ?? items[0]), status: "cancelled" };
+  }
+  return apiFetch(`/api/v1/assessments/${assessmentId}/cancel`, { method: "POST" });
 }
 
 export async function fetchAssets(params: {

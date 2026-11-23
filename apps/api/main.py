@@ -18,6 +18,7 @@ from apps.api.core.exceptions import register_exception_handlers
 from apps.api.core.middleware import (
     RateLimitMiddleware,
     RequestIdMiddleware,
+    RequestSizeLimitMiddleware,
     SecurityHeadersMiddleware,
 )
 from apps.api.core.probes import ProbeFunc, build_default_probes
@@ -65,11 +66,16 @@ def create_app(
         allow_origins=runtime_settings.cors_origins,
         allow_credentials=False,
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+        allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-CSRF-Token"],
+    )
+    app.add_middleware(
+        RequestSizeLimitMiddleware,
+        max_body_bytes=runtime_settings.max_request_body_bytes,
     )
     app.add_middleware(
         RateLimitMiddleware,
         requests_per_minute=runtime_settings.rate_limit_requests_per_minute,
+        trusted_proxy_hosts=runtime_settings.trusted_proxy_hosts,
     )
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(RequestIdMiddleware)

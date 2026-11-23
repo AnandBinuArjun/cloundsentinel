@@ -7,6 +7,7 @@ bounded timeouts, and partial-failure reporting.
 
 from __future__ import annotations
 
+import time
 import uuid
 from typing import Any
 
@@ -23,8 +24,10 @@ from cloud_connectors.azure.rules import (
 )
 from packages.assessment.interface import (
     CheckEvaluation,
+    CheckStatus,
     CloudProviderConnector,
     CollectionReport,
+    Confidence,
     DiscoveredAsset,
     IdentityAnalysisReport,
     IdentityRiskItem,
@@ -109,15 +112,36 @@ class AzureConnector(CloudProviderConnector):
         path: str,
         api_version: str,
         max_pages: int = 20,
+        max_retries: int = 3,
     ) -> list[dict[str, Any]]:
-        """Execute SSRF-validated, paginated GET requests against Azure Resource Manager."""
+        """Execute SSRF-validated, paginated GET requests against Azure Resource Manager with retry/cycle guards."""
         url = validate_outbound_https_url(f"{_ARM_BASE_URL}{path}?api-version={api_version}")
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
         items: list[dict[str, Any]] = []
         pages = 0
+        visited_urls: set[str] = set()
 
         while url and pages < max_pages:
-            resp = client.get(url, headers=headers, timeout=15.0)
+            if url in visited_urls:
+                raise RuntimeError("Detected cyclic nextLink pagination in Azure ARM response.")
+            visited_urls.add(url)
+
+            resp: httpx.Response | None = None
+            for attempt in range(max_retries):
+                resp = client.get(url, headers=headers, timeout=15.0)
+                if resp.status_code in (429, 502, 503, 504) and attempt + 1 < max_retries:
+                    retry_after_raw = resp.headers.get("Retry-After", "")
+                    delay = (
+                        min(float(retry_after_raw), 2.0)
+                        if retry_after_raw.isdigit()
+                        else min(0.05 * (2**attempt), 1.0)
+                    )
+                    time.sleep(delay)
+                    continue
+                break
+
+            if resp is None:
+                raise RuntimeError("No HTTP response received from Azure ARM.")
             resp.raise_for_status()
             body = resp.json()
             if isinstance(body, dict) and isinstance(body.get("value"), list):
@@ -392,7 +416,39 @@ class AzureConnector(CloudProviderConnector):
             )
 
         try:
-            self._acquire_arm_token()
+            token = self._acquire_arm_token()
+            sub_url = validate_outbound_https_url(
+                f"{_ARM_BASE_URL}/subscriptions/{self.subscription_id}?api-version=2022-12-01"
+            )
+            own_client = self._http_client is None
+            client = self._http_client or httpx.Client(timeout=15.0)
+            try:
+                resp = client.get(
+                    sub_url,
+                    headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                    timeout=15.0,
+                )
+                if resp.status_code in (401, 403, 404):
+                    return PreflightResult(
+                        valid=False,
+                        provider="azure",
+                        account_or_subscription_id=self.subscription_id,
+                        identity_arn_or_principal=self.azure_client_id or self.auth_mode,
+                        auth_mode=self.auth_mode,
+                        data_source="live",
+                        checked_permissions={
+                            "arm_token": "ok",
+                            "Microsoft.Resources/subscriptions/read": "denied",
+                        },
+                        errors=[
+                            f"Azure subscription preflight check failed with HTTP {resp.status_code}."
+                        ],
+                    )
+                resp.raise_for_status()
+            finally:
+                if own_client:
+                    client.close()
+
             return PreflightResult(
                 valid=True,
                 provider="azure",
@@ -400,7 +456,10 @@ class AzureConnector(CloudProviderConnector):
                 identity_arn_or_principal=self.azure_client_id or self.auth_mode,
                 auth_mode=self.auth_mode,
                 data_source="live",
-                checked_permissions={"arm_token": "ok"},
+                checked_permissions={
+                    "arm_token": "ok",
+                    "Microsoft.Resources/subscriptions/read": "ok",
+                },
                 errors=[],
             )
         except Exception as exc:
@@ -412,7 +471,7 @@ class AzureConnector(CloudProviderConnector):
                 auth_mode=self.auth_mode,
                 data_source="live",
                 checked_permissions={"arm_token": "denied"},
-                errors=[f"Azure Identity token acquisition failed ({type(exc).__name__})"],
+                errors=[f"Azure Identity/ARM preflight failed ({type(exc).__name__})"],
             )
 
     def collect_and_assess(self) -> CollectionReport:
@@ -553,6 +612,84 @@ class AzureConnector(CloudProviderConnector):
             )
         )
 
+        # Emit explicit NOT_ASSESSED / ERROR CheckEvaluations for failed ARM provider calls
+        failed_services = {
+            str(pf.get("service")): str(pf.get("error", "Unknown")) for pf in partial_failures
+        }
+        for svc_key, rule_id, r_type, r_title, r_perm in (
+            (
+                "Microsoft.Storage",
+                "AZ-STG-001",
+                "azure_storage_account",
+                "Azure Storage account public access assessment",
+                "Microsoft.Storage/storageAccounts/read",
+            ),
+            (
+                "Microsoft.Network/nsg",
+                "AZ-NET-001",
+                "azure_nsg",
+                "Azure NSG inbound port assessment",
+                "Microsoft.Network/networkSecurityGroups/read",
+            ),
+            (
+                "Microsoft.KeyVault",
+                "AZ-KV-001",
+                "azure_key_vault",
+                "Azure Key Vault hardening assessment",
+                "Microsoft.KeyVault/vaults/read",
+            ),
+            (
+                "Microsoft.Authorization",
+                "AZ-IAM-001",
+                "azure_rbac_scope",
+                "Subscription-wide Owner/User Access Administrator assignments must be minimized",
+                "Microsoft.Authorization/roleAssignments/read",
+            ),
+            (
+                "Microsoft.Insights",
+                "AZ-MON-001",
+                "azure_diagnostic_settings",
+                "Azure subscription must export Activity Logs via Diagnostic Settings",
+                "Microsoft.Insights/diagnosticSettings/read",
+            ),
+            (
+                "Microsoft.Security",
+                "AZ-MON-002",
+                "azure_defender_for_cloud",
+                "Microsoft Defender for Cloud monitoring must be enabled",
+                "Microsoft.Security/pricings/read",
+            ),
+        ):
+            if svc_key in failed_services:
+                err_name = failed_services[svc_key]
+                if rule_id in ("AZ-IAM-001", "AZ-MON-001", "AZ-MON-002"):
+                    evaluations = [ev for ev in evaluations if ev.rule_id != rule_id]
+                is_perm = "Permission" in err_name or "403" in err_name
+                evaluations.append(
+                    CheckEvaluation(
+                        rule_id=rule_id,
+                        rule_version="1.0.0",
+                        provider="azure",
+                        account_ref=self.subscription_id,
+                        resource_id=f"/subscriptions/{self.subscription_id}/providers/{svc_key}",
+                        resource_type=r_type,
+                        region="global",
+                        title=r_title,
+                        description=f"ARM collection failed for {svc_key}: {err_name}",
+                        status=CheckStatus.NOT_ASSESSED if is_perm else CheckStatus.ERROR,
+                        severity=Severity.HIGH,
+                        confidence=Confidence.LOW,
+                        required_permissions=[r_perm],
+                        expected_config={"collection_succeeded": True},
+                        observed_config={"service": svc_key, "error": err_name},
+                        evidence={"service": svc_key, "error": err_name},
+                        explanation=f"Unable to evaluate {rule_id} because {svc_key} API failed ({err_name}).",
+                        remediation_guidance=f"Grant {r_perm} Reader access on the target subscription.",
+                        framework_mappings=[],
+                        data_source=self.data_source,
+                    )
+                )
+
         return CollectionReport(
             assets=assets,
             evaluations=evaluations,
@@ -561,13 +698,22 @@ class AzureConnector(CloudProviderConnector):
         )
 
     def analyze_identities(self) -> IdentityAnalysisReport:
+        extra_limitations: list[str] = []
         if self.data_source == "synthetic_fixture":
             snap = self._fixture_snapshot or get_synthetic_azure_snapshot(self.subscription_id)
         else:
             try:
-                snap, _ = self._collect_live_snapshot()
-            except Exception:
+                snap, partial = self._collect_live_snapshot()
+                for pf in partial:
+                    if pf.get("service") == "Microsoft.Authorization":
+                        extra_limitations.append(
+                            f"Live Azure RBAC collection encountered partial error: {pf.get('error')}."
+                        )
+            except Exception as exc:
                 snap = {"role_assignments": []}
+                extra_limitations.append(
+                    f"Live Azure identity collection failed ({type(exc).__name__}); 0 principals could be evaluated."
+                )
 
         items: list[IdentityRiskItem] = []
         assignments = snap.get("role_assignments", [])
@@ -606,7 +752,8 @@ class AzureConnector(CloudProviderConnector):
             data_source=self.data_source,
             principals_reviewed=len(assignments),
             findings=items,
-            limitations=[
+            limitations=extra_limitations
+            + [
                 "Entra ID MFA registration and inactive user sign-in dates require optional Microsoft Graph AuditLog.Read.All and UserAuthenticationMethod.Read.All permissions.",
                 "Conditional Access policy interactions and nested Entra group memberships are not fully resolved from ARM roleAssignments alone.",
             ],

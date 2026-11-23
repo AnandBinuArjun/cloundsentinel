@@ -48,6 +48,7 @@ class ConnectionResponse(BaseModel):
 
 class AssessmentTriggerRequest(BaseModel):
     connection_id: uuid.UUID
+    idempotency_key: str | None = Field(default=None, max_length=128)
 
 
 class AssessmentRunResponse(BaseModel):
@@ -56,14 +57,39 @@ class AssessmentRunResponse(BaseModel):
     provider: str
     status: str
     data_source: str
+    job_id: str | None = None
+    idempotency_key: str | None = None
+    progress_pct: int = 0
+    failure_reason: str | None = None
     assets_discovered: int
     checks_passed: int
     checks_failed: int
     checks_not_assessed: int
     checks_errored: int
     partial_failures: list[dict[str, Any]]
+    queued_at: datetime | None = None
     started_at: datetime
     completed_at: datetime | None
+    cancelled_at: datetime | None = None
+
+
+class AssessmentResultResponse(BaseModel):
+    id: uuid.UUID
+    assessment_run_id: uuid.UUID
+    asset_id: uuid.UUID | None
+    rule_id: str
+    rule_version: str
+    provider: str
+    account_ref: str
+    resource_id: str
+    region: str
+    status: str
+    severity: str
+    confidence: str
+    expected_config: dict[str, Any]
+    observed_config: dict[str, Any]
+    explanation: str
+    evaluated_at: datetime
 
 
 class AssetResponse(BaseModel):
@@ -127,6 +153,7 @@ class DetectionEventResponse(BaseModel):
     id: uuid.UUID
     rule_id: str
     provider: str
+    provider_event_id: str = ""
     account_ref: str
     region: str
     event_name: str
@@ -149,6 +176,7 @@ class DetectionEventResponse(BaseModel):
 
 class RemediationPreviewRequest(BaseModel):
     finding_id: uuid.UUID
+    idempotency_key: str | None = Field(default=None, max_length=128)
 
 
 class RemediationApprovalRequest(BaseModel):
@@ -158,6 +186,7 @@ class RemediationApprovalRequest(BaseModel):
 
 class RemediationExecuteRequest(BaseModel):
     confirm_live: bool = False
+    idempotency_key: str | None = Field(default=None, max_length=128)
 
 
 class RemediationResponse(BaseModel):
@@ -174,7 +203,14 @@ class RemediationResponse(BaseModel):
     proposed_by: uuid.UUID
     approved_by: uuid.UUID | None
     executed_by: uuid.UUID | None
+    idempotency_key: str | None = None
+    operation_id: str | None = None
+    verification_rule_id: str | None = None
+    verification_status: str = "unverified"
+    failure_reason: str | None = None
     verification_evidence: dict[str, Any]
+    executed_at: datetime | None = None
+    verified_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

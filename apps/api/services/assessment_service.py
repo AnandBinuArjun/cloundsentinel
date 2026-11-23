@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 
@@ -65,7 +66,7 @@ async def validate_cloud_connection(
         raise PermissionError("Cross-tenant connection validation denied.")
 
     connector = build_connector(connection)
-    preflight = connector.validate_connection()
+    preflight = await asyncio.to_thread(connector.validate_connection)
 
     connection.status = "healthy" if preflight.valid else "error"
     connection.last_validated_at = preflight.validated_at
@@ -116,30 +117,147 @@ async def validate_cloud_connection(
     return preflight
 
 
-async def execute_assessment_run(
+async def enqueue_assessment_run(
     session: AsyncSession,
     *,
     auth: AuthContext,
     connection: CloudConnection,
-) -> AssessmentRun:
-    """Run asset discovery + deterministic checks and persist normalized findings and evidence."""
+    idempotency_key: str | None = None,
+) -> tuple[AssessmentRun, bool]:
+    """Create a persistent QUEUED AssessmentRun with idempotency and per-connection concurrency guard.
+
+    Returns (run, newly_created).
+    """
     auth.require_permission(Permission.ASSESSMENTS_RUN)
     if connection.tenant_id != auth.tenant_id:
         raise PermissionError("Cross-tenant assessment execution denied.")
 
+    if idempotency_key:
+        existing_idem = (
+            await session.execute(
+                select(AssessmentRun).where(
+                    AssessmentRun.tenant_id == auth.tenant_id,
+                    AssessmentRun.idempotency_key == idempotency_key,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing_idem is not None:
+            return existing_idem, False
+
+    active_run = (
+        await session.execute(
+            select(AssessmentRun).where(
+                AssessmentRun.tenant_id == auth.tenant_id,
+                AssessmentRun.connection_id == connection.id,
+                AssessmentRun.status.in_(("queued", "running")),
+            )
+        )
+    ).scalar_one_or_none()
+    if active_run is not None:
+        raise ValueError(
+            f"An assessment run ({active_run.id}) is already {active_run.status} for connection {connection.id}."
+        )
+
+    now = datetime.now(UTC)
     run = AssessmentRun(
         tenant_id=auth.tenant_id,
         connection_id=connection.id,
         provider=connection.provider,
-        status="running",
+        status="queued",
+        job_id=f"job-{uuid.uuid4()}",
+        idempotency_key=idempotency_key,
+        progress_pct=0,
         data_source=connection.data_source,
         triggered_by=auth.user_id,
+        queued_at=now,
+        started_at=now,
     )
     session.add(run)
     await session.flush()
+    await record_audit_event(
+        session,
+        auth=auth,
+        action="assessment.queued",
+        resource_type="assessment_run",
+        resource_id=str(run.id),
+        details={
+            "provider": run.provider,
+            "connection_id": str(connection.id),
+            "job_id": run.job_id,
+            "data_source": run.data_source,
+        },
+    )
+    await session.commit()
+    await session.refresh(run)
+    return run, True
+
+
+async def cancel_assessment_run(
+    session: AsyncSession,
+    *,
+    auth: AuthContext,
+    run: AssessmentRun,
+) -> AssessmentRun:
+    """Cancel a queued or running assessment run."""
+    auth.require_permission(Permission.ASSESSMENTS_RUN)
+    if run.tenant_id != auth.tenant_id:
+        raise PermissionError("Cross-tenant assessment cancellation denied.")
+    if run.status not in ("queued", "running"):
+        raise ValueError(f"Assessment run in status '{run.status}' cannot be cancelled.")
+
+    run.status = "cancelled"
+    run.cancelled_at = datetime.now(UTC)
+    run.completed_at = run.cancelled_at
+    run.failure_reason = "Cancelled by operator request."
+    await record_audit_event(
+        session,
+        auth=auth,
+        action="assessment.cancelled",
+        resource_type="assessment_run",
+        resource_id=str(run.id),
+        details={"provider": run.provider, "job_id": run.job_id},
+    )
+    await session.commit()
+    await session.refresh(run)
+    return run
+
+
+async def execute_queued_assessment_run(
+    session: AsyncSession,
+    *,
+    auth: AuthContext,
+    run: AssessmentRun,
+    connection: CloudConnection,
+) -> AssessmentRun:
+    """Execute a queued assessment run (invoked by Celery worker or eager task runner)."""
+    auth.require_permission(Permission.ASSESSMENTS_RUN)
+    if connection.tenant_id != auth.tenant_id or run.tenant_id != auth.tenant_id:
+        raise PermissionError("Cross-tenant assessment execution denied.")
+
+    if run.status == "cancelled":
+        return run
+    if run.status in ("completed", "completed_with_warnings"):
+        return run
+
+    run.status = "running"
+    run.progress_pct = 15
+    run.started_at = datetime.now(UTC)
+    await session.flush()
 
     connector = build_connector(connection)
-    report = connector.collect_and_assess()
+    try:
+        report = await asyncio.to_thread(connector.collect_and_assess)
+    except Exception as exc:
+        run.status = "failed"
+        run.progress_pct = 100
+        run.failure_reason = f"Connector execution failed ({type(exc).__name__})"
+        run.completed_at = datetime.now(UTC)
+        await session.commit()
+        await session.refresh(run)
+        return run
+
+    run.progress_pct = 55
+    await session.flush()
 
     # Upsert discovered assets
     asset_id_by_resource: dict[str, uuid.UUID] = {}
@@ -181,7 +299,9 @@ async def execute_assessment_run(
             asset_id_by_resource[item.resource_id] = existing.id
 
     passed = failed = not_assessed = errored = 0
+    seen_evaluation_keys: set[tuple[str, str]] = set()
     for ev in report.evaluations:
+        seen_evaluation_keys.add((ev.rule_id, ev.resource_id))
         # Ensure SecurityRule catalog entry exists
         existing_rule = await session.get(SecurityRule, ev.rule_id)
         if existing_rule is None:
@@ -326,13 +446,51 @@ async def execute_assessment_run(
                 )
             )
 
+    # Reconcile stale findings for resources that were deleted or no longer exist when collection had no partial failures
+    if not report.partial_failures and report.evaluations:
+        open_account_findings = list(
+            (
+                await session.execute(
+                    select(Finding).where(
+                        Finding.tenant_id == auth.tenant_id,
+                        Finding.provider == connection.provider,
+                        Finding.account_ref == connection.account_or_subscription_id,
+                        Finding.status == "open",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for open_f in open_account_findings:
+            if (open_f.rule_id, open_f.resource_id) not in seen_evaluation_keys:
+                open_f.status = "resolved"
+                open_f.last_seen_at = now
+                session.add(
+                    FindingHistory(
+                        tenant_id=auth.tenant_id,
+                        finding_id=open_f.id,
+                        actor_user_id=auth.user_id,
+                        previous_status="open",
+                        new_status="resolved",
+                        justification="Reconciled stale finding: resource no longer present in complete assessment snapshot.",
+                    )
+                )
+
     run.assets_discovered = len(report.assets)
     run.checks_passed = passed
     run.checks_failed = failed
     run.checks_not_assessed = not_assessed
     run.checks_errored = errored
     run.partial_failures = report.partial_failures
-    run.status = "completed_with_warnings" if report.partial_failures else "completed"
+    run.progress_pct = 100
+    if not report.assets and not report.evaluations and report.partial_failures:
+        run.status = "failed"
+        run.failure_reason = (
+            f"Provider collection failed: {report.partial_failures[0].get('error', 'unknown')}"
+        )
+    else:
+        run.status = "completed_with_warnings" if report.partial_failures else "completed"
     run.completed_at = datetime.now(UTC)
 
     await record_audit_event(
@@ -352,3 +510,27 @@ async def execute_assessment_run(
     await session.commit()
     await session.refresh(run)
     return run
+
+
+async def execute_assessment_run(
+    session: AsyncSession,
+    *,
+    auth: AuthContext,
+    connection: CloudConnection,
+    idempotency_key: str | None = None,
+) -> AssessmentRun:
+    """Enqueue and execute an assessment run through the unified worker lifecycle."""
+    run, newly_created = await enqueue_assessment_run(
+        session,
+        auth=auth,
+        connection=connection,
+        idempotency_key=idempotency_key,
+    )
+    if not newly_created and run.status in ("completed", "completed_with_warnings"):
+        return run
+    return await execute_queued_assessment_run(
+        session,
+        auth=auth,
+        run=run,
+        connection=connection,
+    )

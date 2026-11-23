@@ -57,21 +57,40 @@ CloudSentinel/
 │   ├── docker/              # Multi-stage non-root Dockerfiles (api, worker, web)
 │   └── terraform/           # Isolated AWS & Azure sandbox lab templates + budget/cleanup guides
 ├── database/
-│   ├── migrations/          # Alembic PostgreSQL 16+ migrations (0001_initial_schema)
+│   ├── migrations/          # Alembic PostgreSQL 16+ migrations (0001_initial_schema .. 0003_security_hardening_schema)
 │   └── seeds/               # Explicitly labeled synthetic demo fixture seeder (non-prod only)
 ├── tests/
 │   ├── unit/                # Fast deterministic unit & config tests
 │   ├── integration/         # Health/readiness & full M1–M8 async API/DB lifecycle tests
-│   ├── security/            # Tenant isolation, RBAC, JWT, SoD, SQLi, SSRF, headers, rate limiting
+│   ├── security/            # Tenant isolation, RBAC, JWT/PKCE, SoD, remediation state machine, rate limiting
 │   └── cloud_lab/           # Controlled AWS/Azure sandbox validation policy (manual only)
 ├── scripts/                 # Local YAML/config verification scripts
-├── docs/                    # Living architecture, security, API, schema & operational docs
+├── docs/                    # Living architecture, security, audits, validation, devsecops & release docs
 └── .agents/rules/           # Domain-specific agent engineering standards
 ```
 
 ---
 
-## 4. Change & Release Discipline
+## 4. Hardened Security & Operational Invariants (Phases 1–12)
+
+1. **Remediation Execution Safety (Phase 1)**:
+   - Strict state machine: `DRAFT/PREVIEWED/PENDING_APPROVAL -> APPROVED -> EXECUTING -> EXECUTED_UNVERIFIED -> VERIFYING -> VERIFIED` (with `FAILED`, `REJECTED`, `CANCELLED`, `ROLLBACK_REQUIRED`).
+   - Dry-run (`confirm_live=False`) stops at `executed_unverified` (`verification_status="dry_run_simulated"`) and NEVER resolves any finding.
+   - Live execution (`confirm_live=True`) defaults to disabled (`CLOUDSENTINEL_LIVE_REMEDIATION_ENABLED=false`), requires a separate remediation role ARN, returns `HTTP 501` if no live provider executor is registered, and only resolves a finding after a post-remediation reassessment returns `CheckStatus.PASS`.
+2. **PostgreSQL Row-Level Security & Tenant Context (Phase 2)**:
+   - Migration `0003_security_hardening_schema` enforces `FORCE ROW LEVEL SECURITY` with `USING (...) WITH CHECK (...)` policies across all 14 tenant-scoped tables and creates a dedicated `NOBYPASSRLS` application role (`cloudsentinel_app`).
+   - `get_db_session()` resets `app.current_tenant_id` on checkout and teardown (`finally:`) so pooled connections never leak tenant context.
+3. **Asynchronous Assessment Orchestration (Phase 3)**:
+   - `POST /api/v1/assessments` returns `202 Accepted`, enforces per-connection concurrency locks (`409 Conflict`) and idempotency keys, runs synchronous SDK/HTTP collectors via `asyncio.to_thread()`, exposes `/results` and `/cancel`, and reconciles stale findings on complete runs.
+4. **OIDC PKCE, BFF Cookies, CSRF & Revocation (Phase 4)**:
+   - Supports RFC 7636 PKCE (`S256`), single-use `state`/`nonce` validation, `HttpOnly; SameSite=Lax` BFF session cookies paired with `X-CSRF-Token` validation on state-changing requests, and token revocation via `POST /api/v1/auth/logout`.
+5. **Cloud Connector & Detection Evidence Integrity (Phases 5–7)**:
+   - AWS and Azure connectors emit explicit `NOT_ASSESSED` / `ERROR` `CheckEvaluation` records when service/provider API calls fail.
+   - Detection ingestion validates ISO-8601 event timestamps, verifies `account_ref` belongs to a registered tenant `CloudConnection`, locks synthetic provenance, and deduplicates by `(tenant_id, provider, provider_event_id, rule_id)`.
+
+---
+
+## 5. Change & Release Discipline
 
 For every subsequent feature or security fix:
 1. Inspect existing code, `AGENTS.md`, and relevant `docs/` first.
@@ -84,7 +103,7 @@ For every subsequent feature or security fix:
 
 ---
 
-## 5. Workspace Rule Index
+## 6. Workspace Rule Index
 
 Read and comply with all rules under `.agents/rules/`:
 - `.agents/rules/security-first.md` — Least privilege, multi-tenancy, secrets, error handling, safe remediation

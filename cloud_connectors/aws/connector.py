@@ -23,8 +23,10 @@ from cloud_connectors.aws.rules import (
 )
 from packages.assessment.interface import (
     CheckEvaluation,
+    CheckStatus,
     CloudProviderConnector,
     CollectionReport,
+    Confidence,
     DiscoveredAsset,
     IdentityAnalysisReport,
     IdentityRiskItem,
@@ -185,11 +187,25 @@ class AWSConnector(CloudProviderConnector):
             "security_monitoring": {"security_hub_enabled": False, "guardduty_enabled": False},
         }
 
-        # 1. S3 buckets (public access block, encryption, policy)
+        # 1. S3 buckets (location, public access block, encryption, policy)
         try:
             s3 = session.client("s3", config=self._boto_config)
             for b in s3.list_buckets().get("Buckets", []):
                 bname = b["Name"]
+                bucket_region = self.regions[0]
+                try:
+                    loc = s3.get_bucket_location(Bucket=bname).get("LocationConstraint")
+                    if loc == "EU":
+                        bucket_region = "eu-west-1"
+                    elif isinstance(loc, str) and loc:
+                        bucket_region = loc
+                    else:
+                        bucket_region = "us-east-1"
+                except ClientError as exc:
+                    code = exc.response.get("Error", {}).get("Code", "")
+                    partial_failures.append(
+                        {"service": "s3:GetBucketLocation", "bucket": bname, "error": code}
+                    )
                 pab: dict[str, Any] | None = None
                 enc: dict[str, Any] = {"enabled": False}
                 policy_doc: dict[str, Any] = {}
@@ -228,7 +244,7 @@ class AWSConnector(CloudProviderConnector):
                 snapshot["s3_buckets"].append(
                     {
                         "name": bname,
-                        "region": self.regions[0],
+                        "region": bucket_region,
                         "tags": {},
                         "public_access_block": pab,
                         "encryption": enc,
@@ -236,7 +252,12 @@ class AWSConnector(CloudProviderConnector):
                     }
                 )
         except (ClientError, BotoCoreError) as exc:
-            partial_failures.append({"service": "s3", "error": type(exc).__name__})
+            err_code = (
+                exc.response.get("Error", {}).get("Code", type(exc).__name__)
+                if isinstance(exc, ClientError)
+                else type(exc).__name__
+            )
+            partial_failures.append({"service": "s3", "error": err_code})
 
         # 2. EC2 instances, Security Groups, EBS volumes per selected region
         for region in self.regions:
@@ -292,9 +313,12 @@ class AWSConnector(CloudProviderConnector):
                             }
                         )
             except (ClientError, BotoCoreError) as exc:
-                partial_failures.append(
-                    {"service": "ec2", "region": region, "error": type(exc).__name__}
+                err_code = (
+                    exc.response.get("Error", {}).get("Code", type(exc).__name__)
+                    if isinstance(exc, ClientError)
+                    else type(exc).__name__
                 )
+                partial_failures.append({"service": "ec2", "region": region, "error": err_code})
 
         # 3. CloudTrail trails & logging status
         try:
@@ -316,7 +340,12 @@ class AWSConnector(CloudProviderConnector):
                     }
                 )
         except (ClientError, BotoCoreError) as exc:
-            partial_failures.append({"service": "cloudtrail", "error": type(exc).__name__})
+            err_code = (
+                exc.response.get("Error", {}).get("Code", type(exc).__name__)
+                if isinstance(exc, ClientError)
+                else type(exc).__name__
+            )
+            partial_failures.append({"service": "cloudtrail", "error": err_code})
 
         # 4. IAM users, customer-managed policies, and roles
         try:
@@ -369,7 +398,12 @@ class AWSConnector(CloudProviderConnector):
                         }
                     )
         except (ClientError, BotoCoreError) as exc:
-            partial_failures.append({"service": "iam", "error": type(exc).__name__})
+            err_code = (
+                exc.response.get("Error", {}).get("Code", type(exc).__name__)
+                if isinstance(exc, ClientError)
+                else type(exc).__name__
+            )
+            partial_failures.append({"service": "iam", "error": err_code})
 
         # 5. Security Hub & GuardDuty monitoring posture
         mon: dict[str, Any] = {"security_hub_enabled": False, "guardduty_enabled": False}
@@ -571,6 +605,120 @@ class AWSConnector(CloudProviderConnector):
             )
         )
 
+        # Emit explicit NOT_ASSESSED / ERROR CheckEvaluations for top-level service collection failures
+        failed_services = {
+            str(pf.get("service")): str(pf.get("error", "Unknown")) for pf in partial_failures
+        }
+        for svc_key, rule_specs in (
+            (
+                "s3",
+                [
+                    (
+                        "AWS-S3-001",
+                        "aws_s3_bucket",
+                        "S3 bucket public access assessment",
+                        ["s3:ListAllMyBuckets", "s3:GetBucketPublicAccessBlock"],
+                    )
+                ],
+            ),
+            (
+                "ec2",
+                [
+                    (
+                        "AWS-EC2-001",
+                        "aws_security_group",
+                        "EC2 security group assessment",
+                        ["ec2:DescribeSecurityGroups"],
+                    ),
+                    (
+                        "AWS-EBS-001",
+                        "aws_ebs_volume",
+                        "EBS encryption assessment",
+                        ["ec2:DescribeVolumes"],
+                    ),
+                ],
+            ),
+            (
+                "iam",
+                [
+                    (
+                        "AWS-IAM-001",
+                        "aws_iam_policy",
+                        "IAM policy wildcard assessment",
+                        ["iam:ListPolicies"],
+                    ),
+                    (
+                        "AWS-IAM-002",
+                        "aws_iam_user",
+                        "IAM user MFA/key rotation assessment",
+                        ["iam:ListUsers"],
+                    ),
+                ],
+            ),
+        ):
+            if svc_key in failed_services:
+                err_code = failed_services[svc_key]
+                is_perm = any(
+                    tok in err_code for tok in ("AccessDenied", "Unauthorized", "AuthFailure")
+                )
+                eval_status = CheckStatus.NOT_ASSESSED if is_perm else CheckStatus.ERROR
+                for r_id, r_type, r_title, r_perms in rule_specs:
+                    evaluations.append(
+                        CheckEvaluation(
+                            rule_id=r_id,
+                            rule_version="1.0.0",
+                            provider="aws",
+                            account_ref=self.account_id,
+                            resource_id=f"arn:aws:{svc_key}:global:{self.account_id}:collection-status",
+                            resource_type=r_type,
+                            region=self.regions[0],
+                            title=r_title,
+                            description=f"Service collection failed for {svc_key}: {err_code}",
+                            status=eval_status,
+                            severity=Severity.HIGH,
+                            confidence=Confidence.LOW,
+                            required_permissions=r_perms,
+                            expected_config={"collection_succeeded": True},
+                            observed_config={"service": svc_key, "error": err_code},
+                            evidence={"service": svc_key, "error": err_code},
+                            explanation=f"Unable to evaluate {r_id} because {svc_key} API returned {err_code}.",
+                            remediation_guidance=f"Grant read-only {svc_key} permissions to the assessment role.",
+                            framework_mappings=[],
+                            data_source=self.data_source,
+                        )
+                    )
+
+        if "cloudtrail" in failed_services:
+            err_code = failed_services["cloudtrail"]
+            is_perm = any(
+                tok in err_code for tok in ("AccessDenied", "Unauthorized", "AuthFailure")
+            )
+            evaluations = [ev for ev in evaluations if ev.rule_id != "AWS-CT-001"]
+            evaluations.append(
+                CheckEvaluation(
+                    rule_id="AWS-CT-001",
+                    rule_version="1.0.0",
+                    provider="aws",
+                    account_ref=self.account_id,
+                    resource_id=f"arn:aws:cloudtrail:global:{self.account_id}:account-logging",
+                    resource_type="aws_cloudtrail",
+                    region="global",
+                    title="Multi-region CloudTrail logging must be enabled",
+                    description="Ensures at least one active multi-region CloudTrail trail records management events.",
+                    status=CheckStatus.NOT_ASSESSED if is_perm else CheckStatus.ERROR,
+                    severity=Severity.HIGH,
+                    confidence=Confidence.LOW,
+                    required_permissions=["cloudtrail:DescribeTrails", "cloudtrail:GetTrailStatus"],
+                    expected_config={"active_multi_region_trails": ">=1"},
+                    observed_config={"error": err_code},
+                    evidence={"service": "cloudtrail", "error": err_code},
+                    explanation=f"Unable to verify CloudTrail posture because DescribeTrails returned {err_code}.",
+                    remediation_guidance="Grant cloudtrail:DescribeTrails and cloudtrail:GetTrailStatus permissions.",
+                    framework_mappings=["CIS-AWS-3.1", "NIST-CSF-DE.CM-01", "ISO27001-A.8.15"],
+                    data_source=self.data_source,
+                )
+            )
+
         return CollectionReport(
             assets=assets,
             evaluations=evaluations,
@@ -579,13 +727,22 @@ class AWSConnector(CloudProviderConnector):
         )
 
     def analyze_identities(self) -> IdentityAnalysisReport:
+        extra_limitations: list[str] = []
         if self.data_source == "synthetic_fixture":
             snap = self._fixture_snapshot or get_synthetic_aws_snapshot(self.account_id)
         else:
             try:
-                snap, _ = self._collect_live_snapshot()
-            except Exception:
+                snap, partial = self._collect_live_snapshot()
+                for pf in partial:
+                    if pf.get("service") == "iam":
+                        extra_limitations.append(
+                            f"Live IAM collection encountered partial error: {pf.get('error')}."
+                        )
+            except Exception as exc:
                 snap = {"iam_users": [], "iam_roles": [], "iam_policies": []}
+                extra_limitations.append(
+                    f"Live AWS identity collection failed ({type(exc).__name__}); 0 principals could be evaluated."
+                )
 
         items: list[IdentityRiskItem] = []
 
@@ -640,7 +797,8 @@ class AWSConnector(CloudProviderConnector):
             data_source=self.data_source,
             principals_reviewed=len(snap.get("iam_users", [])) + len(snap.get("iam_roles", [])),
             findings=items,
-            limitations=[
+            limitations=extra_limitations
+            + [
                 "Effective permission simulation does not include AWS Organizations Service Control Policies (SCPs) or resource-based policy conditions.",
                 "Inline policy evaluation and cross-account transitive role chaining require full IAM Access Analyzer permissions.",
             ],

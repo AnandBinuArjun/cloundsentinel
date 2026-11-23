@@ -1166,9 +1166,17 @@ export function executeDemoRemediation(id: string, token: string): RemediationIt
     r.id === id
       ? {
           ...r,
-          stage: "verified",
+          stage: "executed_unverified",
+          execution_mode: "dry_run",
+          verification_status: "dry_run_simulated",
           executed_by: identity.user_id,
-          verification_evidence: { verified_at: new Date().toISOString(), mode: "dry_run" },
+          verification_evidence: {
+            executed_at: new Date().toISOString(),
+            mode: "dry_run",
+            cloud_mutation_performed: false,
+            finding_resolved: false,
+            note: "Dry-run simulation only; no live cloud resource was modified and the finding remains open until verified by a live reassessment.",
+          },
         }
       : r
   );

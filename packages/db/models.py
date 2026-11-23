@@ -224,6 +224,10 @@ class AssessmentRun(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
     data_source: Mapped[str] = mapped_column(String(32), nullable=False, default="live")
     triggered_by: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    job_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    progress_pct: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     assets_discovered: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     checks_passed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     checks_failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -232,8 +236,10 @@ class AssessmentRun(Base):
     partial_failures: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONBVariant, nullable=False, default=list
     )
+    queued_at: Mapped[datetime] = mapped_column(UTCTimestamp, nullable=False, default=utcnow)
     started_at: Mapped[datetime] = mapped_column(UTCTimestamp, nullable=False, default=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(UTCTimestamp, nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(UTCTimestamp, nullable=True)
 
 
 class AssessmentResult(Base):
@@ -375,7 +381,16 @@ class DetectionRule(Base):
 
 class DetectionEvent(Base):
     __tablename__ = "detection_events"
-    __table_args__ = (Index("ix_detection_events_tenant_detected", "tenant_id", "detected_at"),)
+    __table_args__ = (
+        Index("ix_detection_events_tenant_detected", "tenant_id", "detected_at"),
+        Index(
+            "ix_detection_events_dedup",
+            "tenant_id",
+            "provider",
+            "provider_event_id",
+            "rule_id",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(
@@ -383,6 +398,9 @@ class DetectionEvent(Base):
     )
     rule_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     provider: Mapped[str] = mapped_column(String(16), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="", index=True
+    )
     account_ref: Mapped[str] = mapped_column(String(128), nullable=False)
     region: Mapped[str] = mapped_column(String(64), nullable=False, default="global")
     event_name: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -467,9 +485,18 @@ class RemediationRequest(Base):
     proposed_by: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     approved_by: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
     executed_by: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    operation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    verification_rule_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    verification_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="unverified"
+    )
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     verification_evidence: Mapped[dict[str, Any]] = mapped_column(
         JSONBVariant, nullable=False, default=dict
     )
+    executed_at: Mapped[datetime | None] = mapped_column(UTCTimestamp, nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(UTCTimestamp, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCTimestamp, nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         UTCTimestamp, nullable=False, default=utcnow, onupdate=utcnow

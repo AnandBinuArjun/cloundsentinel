@@ -159,8 +159,23 @@ def normalize_aws_cloudtrail_event(
     raw: dict[str, Any], data_source: str = "live"
 ) -> NormalizedCloudEvent:
     """Normalize a raw AWS CloudTrail management event record."""
-    event_time_raw = str(raw.get("eventTime", datetime.now(UTC).isoformat()))
-    parsed_time = datetime.fromisoformat(event_time_raw.replace("Z", "+00:00"))
+    event_time_val = raw.get("eventTime")
+    if not event_time_val or not isinstance(event_time_val, str) or not event_time_val.strip():
+        raise ValueError("AWS CloudTrail event is missing mandatory 'eventTime' field.")
+    try:
+        parsed_time = datetime.fromisoformat(event_time_val.strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid ISO-8601 'eventTime' in AWS CloudTrail event: {event_time_val}"
+        ) from exc
+    if parsed_time.tzinfo is None:
+        parsed_time = parsed_time.replace(tzinfo=UTC)
+
+    event_id_val = raw.get("eventID")
+    if event_id_val is not None and (not isinstance(event_id_val, str) or not event_id_val.strip()):
+        raise ValueError("AWS CloudTrail 'eventID' must be a non-empty string.")
+    event_id = str(event_id_val).strip() if event_id_val else f"ct-{parsed_time.timestamp()}"
+
     user_identity = raw.get("userIdentity", {})
     actor = str(
         user_identity.get("arn")
@@ -169,7 +184,7 @@ def normalize_aws_cloudtrail_event(
         or "unknown-aws-actor"
     )
     return NormalizedCloudEvent(
-        event_id=str(raw.get("eventID", f"ct-{parsed_time.timestamp()}")),
+        event_id=event_id,
         provider="aws",
         account_ref=str(
             raw.get("recipientAccountId") or user_identity.get("accountId") or "unknown"
@@ -189,12 +204,27 @@ def normalize_azure_activity_event(
     raw: dict[str, Any], data_source: str = "live"
 ) -> NormalizedCloudEvent:
     """Normalize a raw Azure Activity Log event record."""
-    event_time_raw = str(raw.get("eventTimestamp", datetime.now(UTC).isoformat()))
-    parsed_time = datetime.fromisoformat(event_time_raw.replace("Z", "+00:00"))
+    event_time_val = raw.get("eventTimestamp")
+    if not event_time_val or not isinstance(event_time_val, str) or not event_time_val.strip():
+        raise ValueError("Azure Activity Log event is missing mandatory 'eventTimestamp' field.")
+    try:
+        parsed_time = datetime.fromisoformat(event_time_val.strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid ISO-8601 'eventTimestamp' in Azure Activity Log event: {event_time_val}"
+        ) from exc
+    if parsed_time.tzinfo is None:
+        parsed_time = parsed_time.replace(tzinfo=UTC)
+
+    event_id_val = raw.get("eventDataId")
+    if event_id_val is not None and (not isinstance(event_id_val, str) or not event_id_val.strip()):
+        raise ValueError("Azure Activity Log 'eventDataId' must be a non-empty string.")
+    event_id = str(event_id_val).strip() if event_id_val else f"az-{parsed_time.timestamp()}"
+
     op_name = raw.get("operationName", {})
     event_name = str(op_name.get("value") if isinstance(op_name, dict) else op_name)
     return NormalizedCloudEvent(
-        event_id=str(raw.get("eventDataId", f"az-{parsed_time.timestamp()}")),
+        event_id=event_id,
         provider="azure",
         account_ref=str(raw.get("subscriptionId", "unknown")),
         region=str(raw.get("location", "global")),

@@ -1,37 +1,57 @@
-"""FastAPI authentication, tenant resolution, and RBAC dependencies."""
+"""FastAPI authentication, tenant resolution, PostgreSQL RLS binding, and RBAC dependencies."""
 
 from __future__ import annotations
 
+import hmac
 from collections.abc import Callable
 
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from packages.auth.oidc import AuthenticationError, OIDCVerifier
+from packages.auth.oidc import (
+    CSRF_HEADER_NAME,
+    SESSION_COOKIE_NAME,
+    AuthenticationError,
+    OIDCVerifier,
+)
 from packages.auth.rbac import AuthContext, Permission, Role
 from packages.common.config import Settings, get_settings
 from packages.db.models import Membership, Tenant, User
 from packages.db.session import get_db_session, set_postgres_tenant_context
+
+_SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 async def get_auth_context(
     request: Request,
     session: AsyncSession = Depends(get_db_session),
 ) -> AuthContext:
-    """Authenticate Bearer JWT and resolve verified tenant membership from PostgreSQL.
+    """Authenticate Bearer JWT or HttpOnly BFF session cookie and resolve verified tenant membership.
 
-    SECURITY: `tenant_id` is derived exclusively from the verified token claim and validated
-    against the persisted `memberships` table. Client query/body tenant IDs are never trusted.
+    SECURITY:
+    1. `tenant_id` is derived exclusively from the cryptographically verified token claim.
+    2. PostgreSQL RLS context (`app.current_tenant_id`) is bound BEFORE querying `memberships`
+       so `FORCE ROW LEVEL SECURITY` on `memberships` authorizes strictly within `claims.tenant_id`.
+    3. When authenticated via `HttpOnly` cookie, state-changing requests MUST present a matching
+       `X-CSRF-Token` header.
     """
     auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
+    cookie_token = request.cookies.get(SESSION_COOKIE_NAME, "")
+    using_cookie = False
+
+    if auth_header.startswith("Bearer "):
+        raw_token = auth_header[len("Bearer ") :].strip()
+    elif cookie_token:
+        raw_token = cookie_token.strip()
+        using_cookie = True
+    else:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid Authorization header.",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    raw_token = auth_header[len("Bearer ") :].strip()
+
     settings: Settings = getattr(request.app.state, "settings", get_settings())
     verifier: OIDCVerifier = getattr(request.app.state, "oidc_verifier", OIDCVerifier(settings))
 
@@ -43,6 +63,21 @@ async def get_auth_context(
             detail="Invalid or expired access token.",
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
+
+    if using_cookie and request.method.upper() not in _SAFE_HTTP_METHODS:
+        csrf_header = request.headers.get(CSRF_HEADER_NAME, "")
+        if (
+            not claims.csrf_token
+            or not csrf_header
+            or not hmac.compare_digest(csrf_header, claims.csrf_token)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="CSRF token missing or invalid for cookie-authenticated mutation.",
+            )
+
+    # Bind PostgreSQL RLS tenant context BEFORE querying `memberships` (Phase 2 fix for F-02).
+    await set_postgres_tenant_context(session, claims.tenant_id)
 
     stmt = (
         select(User, Membership, Tenant)
@@ -72,7 +107,6 @@ async def get_auth_context(
             detail="Assigned role is invalid.",
         ) from exc
 
-    await set_postgres_tenant_context(session, tenant.id)
     request_id = str(getattr(request.state, "request_id", "unknown"))
     return AuthContext(
         user_id=user.id,

@@ -2,23 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import desc, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.services.assessment_service import (
     build_connector,
-    execute_assessment_run,
+    cancel_assessment_run,
+    enqueue_assessment_run,
+    execute_queued_assessment_run,
     validate_cloud_connection,
 )
 from apps.api.services.audit import record_audit_event
 from packages.auth.dependencies import require_permissions
 from packages.auth.rbac import AuthContext, Permission
 from packages.contracts.domain import (
+    AssessmentResultResponse,
     AssessmentRunResponse,
     AssessmentTriggerRequest,
     AssetResponse,
@@ -28,6 +32,7 @@ from packages.contracts.domain import (
     FindingUpdateRequest,
 )
 from packages.db.models import (
+    AssessmentResult,
     AssessmentRun,
     Asset,
     CloudConnection,
@@ -207,10 +212,12 @@ async def get_asset(
 
 
 @router.post(
-    "/assessments", status_code=status.HTTP_201_CREATED, response_model=AssessmentRunResponse
+    "/assessments", status_code=status.HTTP_202_ACCEPTED, response_model=AssessmentRunResponse
 )
 async def trigger_assessment(
     payload: AssessmentTriggerRequest,
+    request: Request,
+    queue_only: bool = Query(default=False, description="Queue assessment without eager execution"),
     auth: AuthContext = Depends(require_permissions(Permission.ASSESSMENTS_RUN)),
     session: AsyncSession = Depends(get_db_session),
 ) -> AssessmentRunResponse:
@@ -222,8 +229,97 @@ async def trigger_assessment(
     if conn is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found.")
 
-    run = await execute_assessment_run(session, auth=auth, connection=conn)
+    try:
+        run, newly_created = await enqueue_assessment_run(
+            session,
+            auth=auth,
+            connection=conn,
+            idempotency_key=payload.idempotency_key,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    async_queue_mode = (
+        bool(getattr(request.app.state, "assessment_queue_only", False)) or queue_only
+    )
+    if newly_created and not async_queue_mode:
+        run = await execute_queued_assessment_run(
+            session,
+            auth=auth,
+            run=run,
+            connection=conn,
+        )
     return AssessmentRunResponse.model_validate(run, from_attributes=True)
+
+
+@router.get(
+    "/assessments/{assessment_id}/results",
+    summary="List individual check evaluation results for an assessment run",
+)
+async def get_assessment_results(
+    assessment_id: uuid.UUID,
+    auth: AuthContext = Depends(require_permissions(Permission.ASSESSMENTS_READ)),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    run_stmt = select(AssessmentRun).where(
+        AssessmentRun.id == assessment_id,
+        AssessmentRun.tenant_id == auth.tenant_id,
+    )
+    run = (await session.execute(run_stmt)).scalar_one_or_none()
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Assessment run not found."
+        )
+
+    rows = list(
+        (
+            await session.execute(
+                select(AssessmentResult)
+                .where(
+                    AssessmentResult.assessment_run_id == run.id,
+                    AssessmentResult.tenant_id == auth.tenant_id,
+                )
+                .order_by(AssessmentResult.rule_id, AssessmentResult.resource_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {
+        "assessment_run_id": str(run.id),
+        "status": run.status,
+        "total": len(rows),
+        "items": [
+            AssessmentResultResponse.model_validate(r, from_attributes=True).model_dump(mode="json")
+            for r in rows
+        ],
+    }
+
+
+@router.post(
+    "/assessments/{assessment_id}/cancel",
+    response_model=AssessmentRunResponse,
+    summary="Cancel a queued or running assessment run",
+)
+async def cancel_assessment_endpoint(
+    assessment_id: uuid.UUID,
+    auth: AuthContext = Depends(require_permissions(Permission.ASSESSMENTS_RUN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> AssessmentRunResponse:
+    run_stmt = select(AssessmentRun).where(
+        AssessmentRun.id == assessment_id,
+        AssessmentRun.tenant_id == auth.tenant_id,
+    )
+    run = (await session.execute(run_stmt)).scalar_one_or_none()
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Assessment run not found."
+        )
+    try:
+        cancelled = await cancel_assessment_run(session, auth=auth, run=run)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return AssessmentRunResponse.model_validate(cancelled, from_attributes=True)
 
 
 @router.get("/assessments", summary="List assessment runs")
@@ -480,7 +576,8 @@ async def get_identity_analysis(
     )
     reports = []
     for conn in conns:
-        report = build_connector(conn).analyze_identities()
+        connector = build_connector(conn)
+        report = await asyncio.to_thread(connector.analyze_identities)
         reports.append(
             {
                 "connection_id": str(conn.id),
