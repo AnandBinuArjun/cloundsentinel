@@ -1,7 +1,12 @@
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowRight, KeyRound, Lock, Terminal } from "lucide-react";
-import { fetchAuthMe, setStoredToken } from "../lib/api";
+import { ArrowRight, KeyRound, Lock, Play, ShieldCheck, Terminal } from "lucide-react";
+import {
+  DEMO_ADMIN_TOKEN,
+  DEMO_ANALYST_TOKEN,
+  fetchAuthMe,
+  setStoredToken,
+} from "../lib/api";
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -25,6 +30,18 @@ export function LoginPage() {
     }
   };
 
+  const handleLaunchDemo = async (demoToken: string) => {
+    setError(null);
+    setLoading(true);
+    try {
+      setStoredToken(demoToken);
+      await fetchAuthMe();
+      navigate("/");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="flex min-h-[80vh] items-center justify-center py-6">
       <div className="w-full max-w-md space-y-5">
@@ -42,24 +59,60 @@ export function LoginPage() {
           </p>
         </div>
 
-        <div className="rounded-[12px] border border-[#243142] bg-[#111925] p-6 shadow-[0_8px_32px_rgba(0,0,0,0.45)]">
-          <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="rounded-[12px] border border-[#243142] bg-[#111925] p-6 shadow-[0_8px_32px_rgba(0,0,0,0.45)] space-y-5">
+          {/* 1-Click Synthetic Demo Sandbox (Works on Vercel & Local Preview without hardcoded secrets) */}
+          <div className="rounded-[10px] border border-[#00D6A0]/35 bg-[#0C121B] p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-[#F1F5F9]">
+                <ShieldCheck className="h-4 w-4 text-[#00D6A0]" />
+                <span>Interactive Demo Sandbox</span>
+              </div>
+              <span className="rounded-md border border-[#F59E0B]/35 bg-[#F59E0B]/10 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase text-[#F59E0B]">
+                SYNTHETIC FIXTURE
+              </span>
+            </div>
+            <p className="text-[11px] leading-relaxed text-[#A0AEC0]">
+              Explore all 16 workspace views immediately using explicitly labeled synthetic AWS &amp;
+              Azure demo fixtures (<code>data_source=&quot;synthetic_fixture&quot;</code>).
+            </p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => void handleLaunchDemo(DEMO_ADMIN_TOKEN)}
+                className="inline-flex items-center justify-center gap-1.5 rounded-[8px] border border-[#00D6A0]/45 bg-[#00D6A0]/15 px-3 py-2 text-xs font-semibold text-[#00D6A0] transition-colors hover:bg-[#00D6A0]/25 disabled:opacity-50"
+              >
+                <Play className="h-3.5 w-3.5" />
+                <span>Demo Tenant Admin</span>
+              </button>
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => void handleLaunchDemo(DEMO_ANALYST_TOKEN)}
+                className="inline-flex items-center justify-center gap-1.5 rounded-[8px] border border-[#243142] bg-[#172131] px-3 py-2 text-xs font-medium text-[#F1F5F9] transition-colors hover:border-[#00D6A0]/40 hover:text-[#00D6A0] disabled:opacity-50"
+              >
+                <Play className="h-3.5 w-3.5 text-[#38BDF8]" />
+                <span>Demo Security Analyst</span>
+              </button>
+            </div>
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-4 border-t border-[#243142] pt-4">
             <div>
               <label htmlFor="oidc-token" className="block text-xs font-semibold text-[#F1F5F9]">
                 OIDC Access Token (JWT)
               </label>
               <p className="mt-1 text-[11px] leading-relaxed text-[#A0AEC0]">
-                Verified server-side against OIDC JWKS or local dev signing key. Tenant scope and
-                RBAC role are resolved strictly from your membership record.
+                Connect to a live FastAPI control plane using an OIDC JWKS or local dev JWT.
               </p>
               <textarea
                 id="oidc-token"
-                rows={4}
+                rows={3}
                 required
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
                 placeholder="Paste your Bearer JWT (eyJhbGciOi...)"
-                className="mt-2.5 w-full rounded-[8px] border border-[#243142] bg-[#080D14] px-3 py-2.5 font-mono text-xs text-[#F1F5F9] placeholder:text-[#64748B] focus:border-[#00D6A0] focus:outline-none"
+                className="mt-2 w-full rounded-[8px] border border-[#243142] bg-[#080D14] px-3 py-2 font-mono text-xs text-[#F1F5F9] placeholder:text-[#64748B] focus:border-[#00D6A0] focus:outline-none"
               />
             </div>
 
@@ -75,18 +128,18 @@ export function LoginPage() {
             <button
               type="submit"
               disabled={loading}
-              className="flex w-full items-center justify-center gap-2 rounded-[8px] border border-[#00D6A0]/40 bg-[#00D6A0]/15 px-4 py-2.5 text-sm font-semibold text-[#00D6A0] transition-colors hover:bg-[#00D6A0]/25 disabled:opacity-50"
+              className="flex w-full items-center justify-center gap-2 rounded-[8px] border border-[#243142] bg-[#172131] px-4 py-2.5 text-xs font-semibold text-[#F1F5F9] transition-colors hover:border-[#00D6A0]/40 hover:text-[#00D6A0] disabled:opacity-50"
             >
-              <KeyRound className="h-4 w-4" />
-              <span>{loading ? "Verifying Session..." : "Authenticate Session"}</span>
-              <ArrowRight className="h-4 w-4" />
+              <KeyRound className="h-3.5 w-3.5" />
+              <span>{loading ? "Verifying Session..." : "Authenticate with OIDC JWT"}</span>
+              <ArrowRight className="h-3.5 w-3.5" />
             </button>
           </form>
 
-          <div className="mt-5 border-t border-[#243142] pt-4 text-[11px] text-[#A0AEC0] space-y-2">
+          <div className="border-t border-[#243142] pt-4 text-[11px] text-[#A0AEC0] space-y-2">
             <div className="flex items-center gap-1.5 font-medium text-[#F1F5F9]">
               <Terminal className="h-3.5 w-3.5 text-[#00D6A0]" />
-              <span>Local Development Quick Seed</span>
+              <span>Local FastAPI Seeder</span>
             </div>
             <code className="block rounded-[8px] border border-[#243142] bg-[#080D14] px-2.5 py-1.5 font-mono text-[11px] text-[#00D6A0]">
               python database/seeds/seed_demo_fixtures.py

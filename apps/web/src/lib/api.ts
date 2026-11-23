@@ -274,15 +274,61 @@ export interface IdentityAnalysisResponse {
   }>;
 }
 
+import {
+  approveDemoRemediation,
+  createDemoConnection,
+  DEMO_ADMIN_TOKEN,
+  DEMO_ANALYST_TOKEN,
+  executeDemoRemediation,
+  getDemoAssessments,
+  getDemoAssets,
+  getDemoAuditEvents,
+  getDemoCompliance,
+  getDemoConnections,
+  getDemoDashboardSummary,
+  getDemoDetections,
+  getDemoFindingDetail,
+  getDemoFindings,
+  getDemoHealth,
+  getDemoIdentity,
+  getDemoIdentityAnalysis,
+  getDemoReadiness,
+  getDemoRemediations,
+  getDemoSystemInfo,
+  isSyntheticDemoToken,
+  previewDemoRemediation,
+  triggerDemoAssessment,
+  updateDemoDetectionDisposition,
+  updateDemoFindingStatus,
+} from "./demoFixtures";
+
+export { DEMO_ADMIN_TOKEN, DEMO_ANALYST_TOKEN, isSyntheticDemoToken };
+
 const TOKEN_STORAGE_KEY = "cloudsentinel_access_token";
+const DEMO_SIGNOUT_KEY = "cloudsentinel_demo_signed_out";
 
 export const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000"
 ).replace(/\/$/, "");
 
+function isRemoteStaticPreviewHost(): boolean {
+  if (import.meta.env.VITE_API_BASE_URL) return false;
+  if (typeof window === "undefined") return false;
+  const host = window.location.hostname;
+  return Boolean(host && host !== "localhost" && host !== "127.0.0.1");
+}
+
 export function getStoredToken(): string {
   try {
-    return window.sessionStorage.getItem(TOKEN_STORAGE_KEY) ?? "";
+    const stored = window.sessionStorage.getItem(TOKEN_STORAGE_KEY) ?? "";
+    if (stored) return stored;
+    if (
+      isRemoteStaticPreviewHost() &&
+      window.sessionStorage.getItem(DEMO_SIGNOUT_KEY) !== "true"
+    ) {
+      return DEMO_ADMIN_TOKEN;
+    }
+    return "";
   } catch {
     return "";
   }
@@ -291,8 +337,10 @@ export function getStoredToken(): string {
 export function setStoredToken(token: string): void {
   try {
     if (token) {
+      window.sessionStorage.removeItem(DEMO_SIGNOUT_KEY);
       window.sessionStorage.setItem(TOKEN_STORAGE_KEY, token.trim());
     } else {
+      window.sessionStorage.setItem(DEMO_SIGNOUT_KEY, "true");
       window.sessionStorage.removeItem(TOKEN_STORAGE_KEY);
     }
   } catch {
@@ -328,10 +376,12 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export async function fetchHealth(): Promise<HealthResponse> {
+  if (isSyntheticDemoToken(getStoredToken())) return getDemoHealth();
   return apiFetch<HealthResponse>("/health");
 }
 
 export async function fetchReadiness(): Promise<{ httpStatus: number; data: ReadinessResponse }> {
+  if (isSyntheticDemoToken(getStoredToken())) return getDemoReadiness();
   const response = await fetch(`${API_BASE_URL}/ready`, { headers: { Accept: "application/json" } });
   if (response.status !== 200 && response.status !== 503) {
     throw new Error(`Readiness endpoint returned HTTP ${response.status}`);
@@ -341,32 +391,40 @@ export async function fetchReadiness(): Promise<{ httpStatus: number; data: Read
 }
 
 export async function fetchSystemInfo(): Promise<SystemInfoResponse> {
+  if (isSyntheticDemoToken(getStoredToken())) return getDemoSystemInfo();
   return apiFetch<SystemInfoResponse>("/api/v1/system/info");
 }
 
 export async function fetchAuthMe(): Promise<AuthIdentity> {
+  const token = getStoredToken();
+  if (isSyntheticDemoToken(token)) return getDemoIdentity(token);
   return apiFetch<AuthIdentity>("/api/v1/auth/me");
 }
 
 export async function fetchDashboardSummary(provider?: "aws" | "azure"): Promise<DashboardSummary> {
+  if (isSyntheticDemoToken(getStoredToken())) return getDemoDashboardSummary(provider);
   const qs = provider ? `?provider=${provider}` : "";
   return apiFetch<DashboardSummary>(`/api/v1/dashboard/summary${qs}`);
 }
 
 export async function fetchConnections(provider?: string): Promise<{ total: number; items: CloudConnectionItem[] }> {
+  if (isSyntheticDemoToken(getStoredToken())) return getDemoConnections(provider);
   const qs = provider ? `?provider=${encodeURIComponent(provider)}` : "";
   return apiFetch(`/api/v1/connections${qs}`);
 }
 
 export async function createConnection(payload: Record<string, unknown>): Promise<CloudConnectionItem> {
+  if (isSyntheticDemoToken(getStoredToken())) return createDemoConnection(payload);
   return apiFetch("/api/v1/connections", { method: "POST", body: JSON.stringify(payload) });
 }
 
 export async function validateConnection(id: string): Promise<Record<string, unknown>> {
+  if (isSyntheticDemoToken(getStoredToken())) return { status: "healthy", connection_id: id };
   return apiFetch(`/api/v1/connections/${id}/validate`, { method: "POST" });
 }
 
 export async function triggerAssessment(connectionId: string): Promise<AssessmentRunItem> {
+  if (isSyntheticDemoToken(getStoredToken())) return triggerDemoAssessment(connectionId);
   return apiFetch("/api/v1/assessments", {
     method: "POST",
     body: JSON.stringify({ connection_id: connectionId }),
@@ -374,6 +432,7 @@ export async function triggerAssessment(connectionId: string): Promise<Assessmen
 }
 
 export async function fetchAssessments(): Promise<{ total: number; items: AssessmentRunItem[] }> {
+  if (isSyntheticDemoToken(getStoredToken())) return getDemoAssessments();
   return apiFetch("/api/v1/assessments");
 }
 
@@ -382,6 +441,7 @@ export async function fetchAssets(params: {
   search?: string;
   offset?: number;
 }): Promise<{ total: number; items: AssetItem[] }> {
+  if (isSyntheticDemoToken(getStoredToken())) return getDemoAssets(params);
   const sp = new URLSearchParams();
   if (params.provider) sp.set("provider", params.provider);
   if (params.search) sp.set("search", params.search);
@@ -396,6 +456,7 @@ export async function fetchFindings(params: {
   status?: string;
   search?: string;
 }): Promise<{ total: number; items: FindingItem[] }> {
+  if (isSyntheticDemoToken(getStoredToken())) return getDemoFindings(params);
   const sp = new URLSearchParams();
   if (params.provider) sp.set("provider", params.provider);
   if (params.severity) sp.set("severity", params.severity);
@@ -406,6 +467,7 @@ export async function fetchFindings(params: {
 }
 
 export async function fetchFindingDetail(id: string): Promise<FindingDetailResponse> {
+  if (isSyntheticDemoToken(getStoredToken())) return getDemoFindingDetail(id);
   return apiFetch(`/api/v1/findings/${id}`);
 }
 
@@ -414,6 +476,8 @@ export async function updateFindingStatus(
   status: string,
   justification: string
 ): Promise<FindingItem> {
+  const token = getStoredToken();
+  if (isSyntheticDemoToken(token)) return updateDemoFindingStatus(id, status, justification, token);
   return apiFetch(`/api/v1/findings/${id}`, {
     method: "PATCH",
     body: JSON.stringify({ status, justification }),
@@ -421,10 +485,12 @@ export async function updateFindingStatus(
 }
 
 export async function fetchIdentityAnalysis(): Promise<IdentityAnalysisResponse> {
+  if (isSyntheticDemoToken(getStoredToken())) return getDemoIdentityAnalysis();
   return apiFetch("/api/v1/identity/analysis");
 }
 
 export async function fetchDetections(): Promise<{ total: number; items: DetectionItem[] }> {
+  if (isSyntheticDemoToken(getStoredToken())) return getDemoDetections();
   return apiFetch("/api/v1/detections");
 }
 
@@ -433,6 +499,9 @@ export async function updateDetectionDisposition(
   disposition: string,
   reason: string
 ): Promise<DetectionItem> {
+  if (isSyntheticDemoToken(getStoredToken())) {
+    return updateDemoDetectionDisposition(id, disposition, reason);
+  }
   return apiFetch(`/api/v1/detections/${id}`, {
     method: "PATCH",
     body: JSON.stringify({ disposition, reason }),
@@ -440,14 +509,18 @@ export async function updateDetectionDisposition(
 }
 
 export async function fetchCompliance(): Promise<ComplianceResponse> {
+  if (isSyntheticDemoToken(getStoredToken())) return getDemoCompliance();
   return apiFetch("/api/v1/compliance");
 }
 
 export async function fetchRemediations(): Promise<{ total: number; items: RemediationItem[] }> {
+  if (isSyntheticDemoToken(getStoredToken())) return getDemoRemediations();
   return apiFetch("/api/v1/remediations");
 }
 
 export async function previewRemediation(findingId: string): Promise<RemediationItem> {
+  const token = getStoredToken();
+  if (isSyntheticDemoToken(token)) return previewDemoRemediation(findingId, token);
   return apiFetch("/api/v1/remediations/preview", {
     method: "POST",
     body: JSON.stringify({ finding_id: findingId }),
@@ -459,6 +532,8 @@ export async function approveRemediation(
   decision: "approved" | "rejected",
   comment: string
 ): Promise<RemediationItem> {
+  const token = getStoredToken();
+  if (isSyntheticDemoToken(token)) return approveDemoRemediation(id, decision, token);
   return apiFetch(`/api/v1/remediations/${id}/approve`, {
     method: "POST",
     body: JSON.stringify({ decision, comment }),
@@ -466,6 +541,8 @@ export async function approveRemediation(
 }
 
 export async function executeRemediation(id: string): Promise<RemediationItem> {
+  const token = getStoredToken();
+  if (isSyntheticDemoToken(token)) return executeDemoRemediation(id, token);
   return apiFetch(`/api/v1/remediations/${id}/execute`, {
     method: "POST",
     body: JSON.stringify({ confirm_live: false }),
@@ -473,6 +550,7 @@ export async function executeRemediation(id: string): Promise<RemediationItem> {
 }
 
 export async function fetchAuditEvents(): Promise<{ total: number; items: AuditEventItem[] }> {
+  if (isSyntheticDemoToken(getStoredToken())) return getDemoAuditEvents();
   return apiFetch("/api/v1/audit-events");
 }
 
@@ -482,6 +560,28 @@ export async function downloadReport(params: {
   provider?: string;
   redact: boolean;
 }): Promise<Blob> {
+  if (isSyntheticDemoToken(getStoredToken())) {
+    const payload = {
+      product: "CloudSentinel",
+      report_type: params.reportType,
+      provider: params.provider ?? "all",
+      redacted: params.redact,
+      data_source: "synthetic_fixture",
+      generated_at: new Date().toISOString(),
+      summary: getDemoDashboardSummary(),
+    };
+    const content =
+      params.format === "csv"
+        ? "rule_id,provider,severity,risk_score,status,data_source\n" +
+          getDemoFindings({})
+            .items.map(
+              (f) =>
+                `${f.rule_id},${f.provider},${f.severity},${f.risk_score},${f.status},${f.data_source}`
+            )
+            .join("\n")
+        : JSON.stringify(payload, null, 2);
+    return new Blob([content], { type: "application/octet-stream" });
+  }
   const sp = new URLSearchParams({
     report_type: params.reportType,
     format: params.format,
